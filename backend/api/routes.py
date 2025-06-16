@@ -72,7 +72,10 @@ async def health_check():
     """Health check endpoint."""
     logger.debug("Health check endpoint called")
     if not all([calendar_service, gmail_service, maps_service, fitness_service, tasks_service, drive_service, sheets_service]):
-        raise HTTPException(status_code=503, detail="Services not initialized")
+        raise HTTPException(
+            status_code=503,
+            detail="Google services not initialized. Please ensure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET environment variables are set."
+        )
     return {"status": "healthy"}
 
 @router.post("/chat")

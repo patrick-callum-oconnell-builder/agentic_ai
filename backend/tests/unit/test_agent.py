@@ -6,8 +6,10 @@ import os
 import sys
 import json
 import asyncio
+import pytest
 
 from backend.agent import PersonalTrainerAgent
+from backend.tools.tools import WorkoutTool
 from backend.google_services.calendar import GoogleCalendarService
 from backend.google_services.gmail import GoogleGmailService
 from backend.google_services.fit import GoogleFitnessService
@@ -66,7 +68,18 @@ class TestPersonalTrainerAgent(unittest.TestCase):
             gmail_service=self.mock_gmail,
             tasks_service=self.mock_tasks,
             drive_service=self.mock_drive,
-            sheets_service=self.mock_sheets
+            sheets_service=self.mock_sheets,
+            maps_service=self.mock_maps
+        )
+
+        # Create WorkoutTool instance for testing
+        self.workout_tool = WorkoutTool(
+            calendar_service=self.mock_calendar,
+            gmail_service=self.mock_gmail,
+            tasks_service=self.mock_tasks,
+            drive_service=self.mock_drive,
+            sheets_service=self.mock_sheets,
+            maps_service=self.mock_maps
         )
 
     def test_initialization(self):
@@ -87,9 +100,7 @@ class TestPersonalTrainerAgent(unittest.TestCase):
         
         # Check for required tools
         required_tools = [
-            "Calendar",
-            "GetEventsForDate",
-            "WriteCalendarEvent",
+            "GoogleCalendar",
             "Email",
             "CreateWorkoutTaskList",
             "AddWorkoutTask",
@@ -98,7 +109,8 @@ class TestPersonalTrainerAgent(unittest.TestCase):
             "UploadWorkoutPlan",
             "CreateWorkoutTracker",
             "AddWorkoutEntry",
-            "AddNutritionEntry"
+            "AddNutritionEntry",
+            "GoogleMaps"
         ]
         
         for tool_name in required_tools:
@@ -174,53 +186,93 @@ class TestPersonalTrainerAgent(unittest.TestCase):
         self.agent.gmail_service.get_recent_emails()
         self.mock_gmail.get_recent_emails.assert_called_once()
 
-    @patch('backend.agent.ChatOpenAI')
-    def test_suggest_workout(self, mock_chat):
-        """Test workout suggestion functionality."""
-        mock_chat.return_value.invoke.return_value = "Here's a suggested workout plan..."
+    def test_workout_tool_suggest(self):
+        """Test workout suggestion functionality through WorkoutTool."""
         user_input = "I want to do a cardio workout tomorrow morning"
-        result = self.agent.suggest_workout(user_input)
+        operation = {
+            "action": "suggest",
+            "userInput": user_input
+        }
+        result = self.workout_tool.handle_operations(operation)
         self.assertIsInstance(result, str)
         self.assertGreater(len(result), 0)
+        self.mock_calendar.get_upcoming_events.assert_called_once()
+        self.mock_gmail.get_recent_emails.assert_called_once()
+        self.mock_tasks.get_workout_tasks.assert_called_once()
 
-    @patch('backend.agent.ChatOpenAI')
-    def test_track_workout(self, mock_chat):
-        """Test workout tracking functionality."""
-        mock_chat.return_value.invoke.return_value = "Workout tracked successfully"
+    def test_workout_tool_track(self):
+        """Test workout tracking functionality through WorkoutTool."""
         workout_data = {
             "type": "cardio",
             "duration": 30,
             "intensity": "moderate",
-            "notes": "Test workout"
+            "notes": "Test workout",
+            "spreadsheet_id": "test_spreadsheet_id",
+            "date": "2024-03-20",
+            "calories": 300,
+            "task_id": "test_task_id",
+            "tasklist_id": "test_tasklist_id"
         }
-        result = self.agent.track_workout(workout_data)
+        operation = {
+            "action": "track",
+            "workoutData": workout_data
+        }
+        result = self.workout_tool.handle_operations(operation)
         self.assertIsInstance(result, str)
         self.assertGreater(len(result), 0)
+        self.mock_sheets.add_workout_entry.assert_called_once()
+        self.mock_tasks.update_task.assert_called_once_with(
+            tasklist_id="test_tasklist_id",
+            task_id="test_task_id",
+            status='completed'
+        )
 
-    @patch('backend.agent.ChatOpenAI')
-    def test_create_workout_plan(self, mock_chat):
-        """Test workout plan creation functionality."""
-        mock_chat.return_value.invoke.return_value = "Workout plan created successfully"
+    def test_workout_tool_create_plan(self):
+        """Test workout plan creation functionality through WorkoutTool."""
         plan_data = {
+            "name": "Weight Loss Plan",
             "goal": "weight loss",
             "duration_weeks": 4,
             "workouts_per_week": 3,
             "preferences": ["cardio", "strength"]
         }
-        result = self.agent.create_workout_plan(plan_data)
+        operation = {
+            "action": "createPlan",
+            "planData": plan_data
+        }
+        result = self.workout_tool.handle_operations(operation)
         self.assertIsInstance(result, str)
         self.assertGreater(len(result), 0)
+        self.mock_drive.create_folder.assert_called_once()
+        self.mock_tasks.create_workout_tasklist.assert_called_once()
+        self.mock_sheets.create_workout_tracker.assert_called_once()
 
-    @patch('backend.agent.ChatOpenAI')
-    async def test_process_messages(self, mock_chat):
-        """Test message processing functionality."""
-        mock_chat.return_value.invoke.return_value = "I'll help you start working out"
-        messages = [
-            {"role": "user", "content": "I want to start working out"}
-        ]
-        result = await self.agent.process_messages(messages)
-        self.assertIsInstance(result, str)
-        self.assertGreater(len(result), 0)
+# Standalone async test for process_messages
+@pytest.mark.asyncio
+async def test_process_messages_async():
+    mock_calendar = MagicMock(spec=GoogleCalendarService)
+    mock_gmail = MagicMock(spec=GoogleGmailService)
+    mock_fit = MagicMock(spec=GoogleFitnessService)
+    mock_tasks = MagicMock(spec=GoogleTasksService)
+    mock_drive = MagicMock(spec=GoogleDriveService)
+    mock_sheets = MagicMock(spec=GoogleSheetsService)
+    mock_maps = MagicMock(spec=GoogleMapsService)
+
+    agent = PersonalTrainerAgent(
+        calendar_service=mock_calendar,
+        gmail_service=mock_gmail,
+        tasks_service=mock_tasks,
+        drive_service=mock_drive,
+        sheets_service=mock_sheets,
+        maps_service=mock_maps
+    )
+
+    messages = [
+        {"role": "user", "content": "I want to start working out"}
+    ]
+    result = await agent.process_messages(messages)
+    assert isinstance(result, str)
+    assert len(result) > 0
 
 if __name__ == '__main__':
     unittest.main() 

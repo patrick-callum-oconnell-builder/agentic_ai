@@ -1,5 +1,4 @@
-from typing import List, Optional, Any, Dict, Annotated
-from langchain_core.messages import BaseMessage
+from typing import List, Optional, Any, Dict, TypedDict, Annotated
 import asyncio
 from dataclasses import dataclass, field
 import operator
@@ -7,9 +6,13 @@ import operator
 def last(left, right):
     return right
 
+class Message(TypedDict):
+    role: str
+    content: str
+
 @dataclass
 class AgentState:
-    messages: Annotated[List[BaseMessage], operator.add] = field(default_factory=list)
+    messages: Annotated[List[Message], operator.add] = field(default_factory=list)
     status: Annotated[str, last] = "active"
     missing_fields: Annotated[List[str], operator.add] = field(default_factory=list)
     last_tool_result: Annotated[Any, last] = None
@@ -23,8 +26,8 @@ class AgentState:
     def _validate_messages(self, messages):
         if messages is not None and not isinstance(messages, list):
             raise ValueError("Messages must be a list")
-        if messages is not None and not all(isinstance(m, BaseMessage) for m in messages):
-            raise ValueError("All messages must be BaseMessage instances")
+        if messages is not None and not all(isinstance(m, dict) and "role" in m and "content" in m for m in messages):
+            raise ValueError("All messages must be dictionaries with 'role' and 'content' fields")
 
     def _validate_status(self, status):
         valid_statuses = ["active", "awaiting_user", "awaiting_tool", "error", "done"]
@@ -79,24 +82,8 @@ class AgentState:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> 'AgentState':
-        """Create a state from a dictionary, ensuring messages are BaseMessage objects."""
-        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, BaseMessage
-        def to_message(obj):
-            if isinstance(obj, BaseMessage):
-                return obj
-            if not isinstance(obj, dict):
-                return obj
-            role = obj.get('role')
-            if role == 'user':
-                return HumanMessage(**obj)
-            elif role == 'assistant':
-                return AIMessage(**obj)
-            elif role == 'system':
-                return SystemMessage(**obj)
-            else:
-                return BaseMessage(**obj)
+        """Create a state from a dictionary."""
         messages = d.get("messages", [])
-        messages = [to_message(m) for m in messages]
         return cls(
             messages=messages,
             status=d.get("status", "active"),

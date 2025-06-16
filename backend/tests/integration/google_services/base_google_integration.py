@@ -10,13 +10,13 @@ sys.path.append(backend_dir)
 
 from agent import PersonalTrainerAgent
 from google_services.calendar import GoogleCalendarService
-from google_services.gmail import GoogleGmailService
-from google_services.fit import GoogleFitnessService
-from google_services.tasks import GoogleTasksService
 from google_services.drive import GoogleDriveService
-from google_services.sheets import GoogleSheetsService
+from google_services.fit import GoogleFitnessService
+from google_services.gmail import GoogleGmailService
 from google_services.maps import GoogleMapsService
-from google_services.auth import get_google_credentials
+from google_services.sheets import GoogleSheetsService
+from google_services.tasks import GoogleTasksService
+from backend.tools.tools import create_tools
 
 class BaseGoogleIntegrationTest(unittest.TestCase):
     """Base class for Google API integration tests."""
@@ -45,8 +45,17 @@ class BaseGoogleIntegrationTest(unittest.TestCase):
         cls.sheets_service = GoogleSheetsService()
         cls.tasks_service = GoogleTasksService()
         cls.maps_service = GoogleMapsService()
-        # Initialize agent with real services
-        cls.agent = PersonalTrainerAgent(
+        # Initialize agent with real services using async initializer
+        import asyncio
+        cls.agent = asyncio.run(PersonalTrainerAgent.ainit(
+            calendar_service=cls.calendar_service,
+            gmail_service=cls.gmail_service,
+            tasks_service=cls.tasks_service,
+            drive_service=cls.drive_service,
+            sheets_service=cls.sheets_service,
+            maps_service=cls.maps_service
+        ))
+        cls.agent.tools = create_tools(
             calendar_service=cls.calendar_service,
             gmail_service=cls.gmail_service,
             tasks_service=cls.tasks_service,

@@ -51,11 +51,22 @@ class GoogleServiceBase(ABC):
         logger.debug("GoogleServiceBase cleanup completed")
 
 class GoogleAPIService:
-    """Base class for Google APIs that require an explicit API key (not OAuth2)."""
+    """Base class for Google API services that use API keys."""
+    
     def __init__(self, api_key_env_var: str):
-        logger.debug(f"Initializing GoogleAPIService with API key from {api_key_env_var}...")
+        """Initialize the service with an API key."""
         self.api_key = os.getenv(api_key_env_var)
         if not self.api_key:
-            logger.error(f"API key not set in environment variable {api_key_env_var}")
-            raise ValueError(f"API key not set in environment variable {api_key_env_var}.")
-        logger.debug("GoogleAPIService initialized successfully") 
+            raise ValueError(f"{api_key_env_var} environment variable not set")
+        self.service = None
+
+    def __del__(self):
+        """Cleanup when the service is destroyed."""
+        try:
+            if hasattr(self, 'service') and self.service is not None:
+                # Only try to close if the service has a close method
+                if hasattr(self.service, 'close'):
+                    self.service.close()
+                self.service = None
+        except Exception as e:
+            logger.error(f"Error closing service: {e}") 
