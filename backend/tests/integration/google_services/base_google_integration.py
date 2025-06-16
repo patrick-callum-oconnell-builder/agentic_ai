@@ -45,7 +45,10 @@ class BaseGoogleIntegrationTest(unittest.TestCase):
         cls.gmail_service = GoogleGmailService()
         cls.sheets_service = GoogleSheetsService()
         cls.tasks_service = GoogleTasksService()
-        cls.maps_service = GoogleMapsService()
+        maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        if not maps_api_key:
+            raise ValueError("Missing required environment variable: GOOGLE_MAPS_API_KEY")
+        cls.maps_service = GoogleMapsService(api_key=maps_api_key)
         # Initialize agent with real services
         cls.agent = PersonalTrainerAgent(
             calendar_service=cls.calendar_service,
