@@ -6,7 +6,7 @@ import os
 import pickle
 from typing import List, Dict, Any, Optional, Union
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from backend.google_services.base import GoogleServiceBase
 
 logger = logging.getLogger(__name__)
@@ -246,7 +246,7 @@ class GoogleTasksService(GoogleServiceBase):
             logger.error(f"Error getting workout tasks: {e}")
             raise
 
-    def get_tasks(self, tasklist_id: str = '@default') -> List[Dict[str, Any]]:
+    def get_tasks(self, tasklist_id: str = '@default', query: str = None) -> List[Dict[str, Any]]:
         """Get tasks from the user's task lists."""
         try:
             tasks = self.service.tasks().list(
@@ -255,7 +255,23 @@ class GoogleTasksService(GoogleServiceBase):
                 showHidden=False
             ).execute()
             
-            return tasks.get('items', [])
+            items = tasks.get('items', [])
+            
+            if query:
+                # Filter tasks based on natural language query
+                if 'this week' in query.lower():
+                    start_date = datetime.now()
+                    end_date = start_date + timedelta(days=7)
+                    items = [task for task in items if task.get('due') and start_date <= datetime.fromisoformat(task['due'].replace('Z', '+00:00')) <= end_date]
+                elif 'this month' in query.lower():
+                    start_date = datetime.now()
+                    end_date = start_date + timedelta(days=30)
+                    items = [task for task in items if task.get('due') and start_date <= datetime.fromisoformat(task['due'].replace('Z', '+00:00')) <= end_date]
+                elif 'overdue' in query.lower():
+                    now = datetime.now()
+                    items = [task for task in items if task.get('due') and datetime.fromisoformat(task['due'].replace('Z', '+00:00')) < now]
+            
+            return items
         except Exception as e:
             print(f"Error fetching tasks: {str(e)}")
             return [] 

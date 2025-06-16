@@ -7,11 +7,7 @@ import logging
 from typing import Optional
 import threading
 import requests
-
-# Add the backend directory to sys.path if not already present
-backend_path = os.path.join(os.path.dirname(__file__), "backend")
-if backend_path not in sys.path:
-    sys.path.insert(0, backend_path)
+import traceback
 
 # Configure logging
 logging.basicConfig(
@@ -20,14 +16,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Add the backend directory to sys.path if not already present
+backend_path = os.path.join(os.path.dirname(__file__), "backend")
+if backend_path not in sys.path:
+    sys.path.insert(0, backend_path)
+    logger.debug(f"Added {backend_path} to sys.path")
+
 SHUTDOWN_SIGNAL_FILE = "shutdown.signal"
 
 def kill_process_on_port(port: int) -> None:
     """Kill any process running on the specified port."""
     try:
+        logger.debug(f"Checking for processes on port {port}")
         # Get all processes using the port
         cmd = f"lsof -i :{port} -t"
         pids = subprocess.check_output(cmd, shell=True).decode().strip().split('\n')
+        logger.debug(f"Found processes on port {port}: {pids}")
         
         for pid in pids:
             if pid:  # Skip empty strings
@@ -35,61 +39,90 @@ def kill_process_on_port(port: int) -> None:
                     pid = int(pid)
                     # Skip if it's our own process or our parent
                     if pid != os.getpid() and pid != os.getppid():
+                        logger.debug(f"Attempting to kill process {pid} on port {port}")
                         os.kill(pid, signal.SIGTERM)
                         logger.info(f"Killed process {pid} on port {port}")
-                except (ValueError, ProcessLookupError):
+                except (ValueError, ProcessLookupError) as e:
+                    logger.warning(f"Failed to kill process {pid}: {str(e)}")
                     continue
     except subprocess.CalledProcessError:
-        # No process found on port
-        pass
+        logger.debug(f"No processes found on port {port}")
+    except Exception as e:
+        logger.error(f"Error killing processes on port {port}: {str(e)}")
+        logger.debug(traceback.format_exc())
 
 def run_backend() -> Optional[subprocess.Popen]:
     """Run the backend server as a module from the project root."""
     try:
+        logger.debug("Starting backend server setup...")
         # Kill any existing process on port 8000
         kill_process_on_port(8000)
         
         # Start the backend server as a module from the project root
+        cmd = [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+        logger.debug(f"Starting backend with command: {' '.join(cmd)}")
+        
         backend_process = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             cwd=os.path.dirname(__file__)  # Run from project root
         )
         logger.info(f"Started Backend process with PID {backend_process.pid}")
+        
+        # Check if process started successfully
+        if backend_process.poll() is not None:
+            logger.error(f"Backend process failed to start. Return code: {backend_process.poll()}")
+            return None
+            
         return backend_process
     except Exception as e:
-        logger.error(f"Failed to start backend: {e}")
+        logger.error(f"Failed to start backend: {str(e)}")
+        logger.debug(traceback.format_exc())
         return None
 
 def run_frontend() -> Optional[subprocess.Popen]:
     """Run the frontend development server."""
     try:
+        logger.debug("Starting frontend server setup...")
         # Kill any existing process on port 3000
         kill_process_on_port(3000)
         
         # Start the frontend server
+        frontend_dir = os.path.join(os.path.dirname(__file__), "frontend")
+        logger.debug(f"Starting frontend from directory: {frontend_dir}")
+        
         frontend_process = subprocess.Popen(
             ["npm", "start"],
-            cwd=os.path.join(os.path.dirname(__file__), "frontend"),  # Use absolute path
+            cwd=frontend_dir,  # Use absolute path
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True
         )
         logger.info(f"Started Frontend process with PID {frontend_process.pid}")
+        
+        # Check if process started successfully
+        if frontend_process.poll() is not None:
+            logger.error(f"Frontend process failed to start. Return code: {frontend_process.poll()}")
+            return None
+            
         return frontend_process
     except Exception as e:
-        logger.error(f"Failed to start frontend: {e}")
+        logger.error(f"Failed to start frontend: {str(e)}")
+        logger.debug(traceback.format_exc())
         return None
 
 def shutdown_watcher(backend_process, frontend_process):
+    logger.debug("Starting shutdown watcher thread")
     while True:
         if os.path.exists(SHUTDOWN_SIGNAL_FILE):
-            print("[SYSTEM] Shutdown signal received. Shutting down servers...")
+            logger.info("Shutdown signal received. Shutting down servers...")
             if backend_process:
+                logger.debug("Terminating backend process")
                 backend_process.terminate()
             if frontend_process:
+                logger.debug("Terminating frontend process")
                 frontend_process.terminate()
             os.remove(SHUTDOWN_SIGNAL_FILE)
             logger.info("All processes cleaned up (shutdown signal)")
@@ -112,6 +145,7 @@ def main():
         )
         if install_process.returncode != 0:
             logger.error(f"Failed to install backend package: {install_process.stderr}")
+            logger.debug(f"Install process stdout: {install_process.stdout}")
             return
         logger.info("Backend package installed successfully (from main)")
         
@@ -123,18 +157,22 @@ def main():
             return
 
         # Wait a moment to ensure backend is up
+        logger.debug("Waiting for backend to start...")
         time.sleep(2)
         
         # Verify backend is running
         try:
+            logger.debug("Checking backend health...")
             response = requests.get("http://localhost:8000/api/health")
             if response.status_code != 200:
                 logger.error(f"Backend health check failed with status {response.status_code}")
+                logger.debug(f"Health check response: {response.text}")
                 backend_process.terminate()
                 return
             logger.info("Backend health check passed")
         except Exception as e:
-            logger.error(f"Backend health check failed: {e}")
+            logger.error(f"Backend health check failed: {str(e)}")
+            logger.debug(traceback.format_exc())
             backend_process.terminate()
             return
 
@@ -147,10 +185,12 @@ def main():
             return
 
         # Start shutdown watcher thread
+        logger.debug("Starting shutdown watcher thread")
         watcher_thread = threading.Thread(target=shutdown_watcher, args=(backend_process, frontend_process), daemon=True)
         watcher_thread.start()
 
         # Stream output from both processes
+        logger.debug("Starting to stream process output")
         while True:
             # Print all available backend output immediately
             backend_line = backend_process.stdout.readline()
@@ -178,7 +218,8 @@ def main():
     except KeyboardInterrupt:
         logger.info("Received keyboard interrupt. Shutting down...")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
+        logger.error(f"Unexpected error: {str(e)}")
+        logger.debug(traceback.format_exc())
     finally:
         # Clean up processes
         if 'backend_process' in locals() and backend_process:

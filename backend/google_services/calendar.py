@@ -30,11 +30,12 @@ class GoogleCalendarService(GoogleServiceBase):
         self.creds = get_google_credentials()
         return build('calendar', 'v3', credentials=self.creds)
 
-    def get_upcoming_events(self, max_results: int = 10) -> List[Dict[str, Any]]:
+    def get_upcoming_events(self, query: str = None, max_results: int = 10) -> List[Dict[str, Any]]:
         """
         Get upcoming events from the user's calendar.
         
         Args:
+            query (str, optional): Natural language query (e.g., 'workouts this week')
             max_results (int): Maximum number of events to return
             
         Returns:
@@ -42,9 +43,22 @@ class GoogleCalendarService(GoogleServiceBase):
         """
         try:
             now = datetime.utcnow().isoformat() + 'Z'
+            time_min = now
+            time_max = None
+
+            if query:
+                # Parse natural language query into a date range
+                parsed_date = dateparser.parse(query, settings={'PREFER_DATES_FROM': 'future'})
+                if parsed_date:
+                    time_min = parsed_date.isoformat() + 'Z'
+                    # If query is like 'this week', set time_max to end of week
+                    if 'week' in query.lower():
+                        time_max = (parsed_date + timedelta(days=7)).isoformat() + 'Z'
+
             events_result = self.service.events().list(
                 calendarId='primary',
-                timeMin=now,
+                timeMin=time_min,
+                timeMax=time_max,
                 maxResults=max_results,
                 singleEvents=True,
                 orderBy='startTime'

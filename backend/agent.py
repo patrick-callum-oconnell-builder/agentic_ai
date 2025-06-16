@@ -21,6 +21,9 @@ from backend.google_services.tasks import GoogleTasksService
 from backend.google_services.drive import GoogleDriveService
 from backend.google_services.sheets import GoogleSheetsService
 from backend.google_services.maps import GoogleMapsService
+from langchain.agents import AgentExecutor
+from langchain.agents import ZeroShotAgent
+from langchain.chains import LLMChain
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -53,21 +56,125 @@ class PersonalTrainerAgent:
     An AI-powered personal trainer agent that integrates with various Google services
     to provide personalized workout recommendations and tracking.
     """
-    def __init__(self, calendar_service, gmail_service, tasks_service, drive_service, sheets_service, maps_service):
+    def __init__(
+        self,
+        calendar_service: GoogleCalendarService,
+        gmail_service: GoogleGmailService,
+        tasks_service: GoogleTasksService,
+        drive_service: GoogleDriveService,
+        sheets_service: GoogleSheetsService,
+        maps_service: GoogleMapsService
+    ):
+        """Initialize the personal trainer agent."""
         self.calendar_service = calendar_service
         self.gmail_service = gmail_service
         self.tasks_service = tasks_service
         self.drive_service = drive_service
         self.sheets_service = sheets_service
         self.maps_service = maps_service
-        self.agent = None
-        self.state_manager = None
+        
+        # Initialize the LLM
+        self.llm = ChatOpenAI(
+            model="gpt-4-turbo-preview",
+            temperature=0.7,
+            streaming=True
+        )
+        
+        # Initialize the tools
+        self.tools = [
+            Tool(
+                name="get_calendar_events",
+                func=self.calendar_service.get_upcoming_events,
+                description="Get upcoming calendar events"
+            ),
+            Tool(
+                name="create_calendar_event",
+                func=self.calendar_service.write_event,
+                description="Create a new calendar event"
+            ),
+            Tool(
+                name="send_email",
+                func=self.gmail_service.send_message,
+                description="Send an email"
+            ),
+            Tool(
+                name="create_task",
+                func=self.tasks_service.create_task,
+                description="Create a new task"
+            ),
+            Tool(
+                name="get_tasks",
+                func=self.tasks_service.get_tasks,
+                description="Get tasks"
+            ),
+            Tool(
+                name="search_drive",
+                func=self.drive_service.list_files,
+                description="Search Google Drive files"
+            ),
+            Tool(
+                name="get_sheet_data",
+                func=self.sheets_service.get_sheet_data,
+                description="Get data from a Google Sheet"
+            ),
+            Tool(
+                name="get_directions",
+                func=self.maps_service.get_directions,
+                description="Get directions between two locations"
+            ),
+            Tool(
+                name="find_nearby_workout_locations",
+                func=self.maps_service.find_nearby_workout_locations,
+                description="Find nearby workout locations (gyms, fitness centers, etc.) near a given location"
+            )
+        ]
+        
+        # Initialize the prompt
+        self.prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a personal trainer assistant. Help users with their fitness goals and workout planning.
+            You have access to the following tools:
+            {tools}
+            
+            Use the following format:
+            
+            Question: the input question you must answer
+            Thought: you should always think about what to do
+            Action: the action to take, should be one of [{tool_names}]
+            Action Input: the input to the action
+            Observation: the result of the action
+            ... (this Thought/Action/Action Input/Observation can repeat N times)
+            Thought: I now know the final answer
+            Final Answer: the final answer to the original input question
+            
+            When searching for workout locations:
+            1. Use the find_nearby_workout_locations tool
+            2. Pass the location as a string (e.g., "1 Infinite Loop, Cupertino, CA")
+            3. The tool will automatically search for gyms and fitness centers within 5km"""),
+            ("human", "{input}"),
+            ("ai", "{agent_scratchpad}")
+        ])
 
     async def async_init(self):
-        """Async initialization method to set up the agent workflow."""
-        self.agent = await self._create_agent_workflow()
-        self.state_manager = StateManager()
-        return self
+        """Initialize the agent asynchronously."""
+        print("Initializing agent...")
+        # Initialize the agent with the tools
+        self.agent = AgentExecutor.from_agent_and_tools(
+            agent=ZeroShotAgent(
+                llm_chain=LLMChain(
+                    llm=self.llm,
+                    prompt=self.prompt
+                ),
+                tools=self.tools,
+                verbose=True
+            ),
+            tools=self.tools,
+            verbose=True,
+            handle_parsing_errors=True
+        )
+        print(f"Agent initialized with {len(self.tools)} tools:")
+        for tool in self.tools:
+            print(f"- {tool.name}: {tool.description}")
+        print("Agent initialization complete.")
 
     async def _create_agent_workflow(self):
         """Create the agent workflow asynchronously."""
@@ -117,7 +224,28 @@ class PersonalTrainerAgent:
 
         # Create the prompt template
         prompt = ChatPromptTemplate.from_messages([
-            ("system", SYSTEM_PROMPT),
+            ("system", """You are a personal trainer AI assistant. Your goal is to help users achieve their fitness goals by:
+1. Understanding their fitness goals and current level
+2. Creating personalized workout plans
+3. Tracking their progress
+4. Providing motivation and guidance
+5. Adjusting plans based on feedback and progress
+
+You have access to various tools to help manage the user's fitness journey:
+- Calendar: Schedule workouts and track availability
+- Gmail: Send workout plans and progress updates
+- Tasks: Create and manage workout-related tasks
+- Drive: Store and organize workout plans and progress reports
+- Sheets: Track workout data and progress metrics
+- Maps: Find nearby gyms and workout locations
+
+When responding to user requests, follow these steps:
+1. First, acknowledge their request in a friendly, conversational way
+2. If you need to use a tool, do so internally
+3. After using a tool, you MUST always summarize the result for the user in a friendly, natural way, even if the tool call failed. Never finish your turn after a tool call without summarizing the result for the user.
+4. You may take multiple actions in a row if needed (e.g., send a message, call a tool, summarize, call another tool, etc.)
+
+Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""),
             ("human", "{input}\n\n{agent_scratchpad}")
         ])
 
@@ -130,11 +258,224 @@ class PersonalTrainerAgent:
 
         return agent
 
+    def _format_tool_response(self, tool_name: str, tool_input: str) -> str:
+        """Format a tool response in a user-friendly way."""
+        tool_responses = {
+            "get_calendar_events": f"I'll check your calendar for {tool_input}.",
+            "create_calendar_event": "I'll schedule that workout for you.",
+            "send_email": "I'll send that email for you.",
+            "create_task": "I'll create that task for you.",
+            "get_tasks": f"I'll check your tasks for {tool_input}.",
+            "search_drive": f"I'll search your Drive for {tool_input}.",
+            "get_sheet_data": "I'll get that data from your spreadsheet.",
+            "get_directions": "I'll get directions for you.",
+            "find_nearby_workout_locations": "I'll find nearby workout locations for you."
+        }
+        return tool_responses.get(tool_name, "I'll help you with that.")
+
+    async def decide_next_action(self, history):
+        """Decide the next action based on the conversation history."""
+        try:
+            # Convert history to the format expected by the agent
+            if isinstance(history, list):
+                # Get the last message's content
+                last_message = history[-1]
+                if hasattr(last_message, 'content'):
+                    input_text = last_message.content
+                else:
+                    input_text = str(last_message)
+                # Get previous messages for chat history
+                chat_history = []
+                for msg in history[:-1]:
+                    if hasattr(msg, 'content'):
+                        chat_history.append(msg.content)
+                    else:
+                        chat_history.append(str(msg))
+            else:
+                input_text = str(history)
+                chat_history = []
+
+            # Format the input for the agent
+            agent_input = {
+                "input": input_text,
+                "chat_history": chat_history,
+                "tools": [tool.name for tool in self.tools],
+                "tool_names": [tool.name for tool in self.tools]
+            }
+            print(f"Agent input: {agent_input}")
+            response = await self.agent.ainvoke(agent_input)
+            print(f"Agent response type: {type(response)}")
+            print(f"Agent response: {response}")
+            
+            # Handle function calls
+            if isinstance(response, dict):
+                print(f"Response is a dict with keys: {response.keys()}")
+                if 'intermediate_steps' in response:
+                    print(f"Intermediate steps: {response['intermediate_steps']}")
+                    # Extract the last step's action
+                    last_step = response['intermediate_steps'][-1]
+                    print(f"Last step: {last_step}")
+                    if isinstance(last_step, tuple) and len(last_step) >= 2:
+                        action = last_step[0]
+                        print(f"Action: {action}")
+                        if isinstance(action, dict):
+                            if action.get('type') == 'tool_call':
+                                return {
+                                    "type": "tool_call",
+                                    "tool": action.get('tool'),
+                                    "args": action.get('args')
+                                }
+                            elif action.get('type') == 'message':
+                                return {
+                                    "type": "message",
+                                    "content": action.get('content')
+                                }
+            elif hasattr(response, 'additional_kwargs'):
+                print(f"Response has additional_kwargs: {response.additional_kwargs}")
+                if 'function_call' in response.additional_kwargs:
+                    function_call = response.additional_kwargs['function_call']
+                    tool_name = function_call['name']
+                    tool_input = json.loads(function_call['arguments']).get('__arg1', '')
+                    
+                    # Special handling for get_directions to ensure both origin and destination
+                    if tool_name == 'get_directions':
+                        # Extract location from the query
+                        location = tool_input
+                        # Use the same location as both origin and destination for now
+                        tool_input = json.dumps({
+                            'origin': location,
+                            'destination': location
+                        })
+                    
+                    return {
+                        "type": "tool_call",
+                        "tool": tool_name,
+                        "args": tool_input
+                    }
+            
+            # Handle regular messages
+            return {
+                "type": "message",
+                "content": response.content if hasattr(response, 'content') else str(response)
+            }
+        except Exception as e:
+            print(f"Error in decide_next_action: {e}")
+            return {
+                "type": "message",
+                "content": "I apologize, but I encountered an error. Please try again."
+            }
+
+    async def process_tool_result(self, history):
+        """Process the tool result and decide the next action."""
+        response = await self.agent.ainvoke({
+            "input": history,
+            "intermediate_steps": []
+        })
+        print(f"Agent response in process_tool_result: {response}")
+        if hasattr(response, "return_values"):
+            output = response.return_values["output"]
+            if isinstance(output, AIMessage) and hasattr(output, "additional_kwargs"):
+                function_call = output.additional_kwargs.get("function_call", {})
+                if function_call:
+                    tool_name = function_call.get("name", "")
+                    tool_input = function_call.get("arguments", "{}")
+                    tool_result = await self._execute_tool(tool_name, tool_input)
+                    history.append(tool_result)
+                    # Feed the tool result back to the agent to generate a user-facing message
+                    return await self.process_tool_result(history)
+            if isinstance(output, AIMessage) and hasattr(output, "content"):
+                return {
+                    "type": "message",
+                    "content": output.content
+                }
+            elif isinstance(output, str):
+                return {
+                    "type": "message",
+                    "content": output
+                }
+        elif isinstance(response, str):
+            return {
+                "type": "message",
+                "content": response
+            }
+        return {
+            "type": "done"
+        }
+
+    async def agent_conversation_loop(self, user_input):
+        """Loop-based orchestration to support multi-step agent actions with enforced tool result summarization."""
+        state = "AGENT_THINKING"
+        history = [user_input]
+        responses = []
+        agent_action = None
+        tool_result = None
+        last_tool = None
+
+        while state != "DONE":
+            print(f"Current state: {state}")
+            if state == "AGENT_THINKING":
+                agent_action = await self.decide_next_action(history)
+                print(f"Agent action: {agent_action}")
+                if agent_action["type"] == "message":
+                    responses.append(agent_action["content"])
+                    state = "DONE"
+                elif agent_action["type"] == "tool_call":
+                    last_tool = agent_action["tool"]
+                    print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
+                    state = "AGENT_TOOL_CALL"
+                else:
+                    state = "DONE"
+            elif state == "AGENT_TOOL_CALL":
+                tool_result = await self._execute_tool(agent_action["tool"], agent_action["args"])
+                print(f"Tool result for {last_tool}: {tool_result}")
+                # Add the tool result as a message in the history
+                history.append(AIMessage(content=f"TOOL RESULT: {tool_result}"))
+                # Always go to summarize state after a tool call
+                state = "AGENT_SUMMARIZE_TOOL_RESULT"
+            elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
+                # Require the agent to summarize the tool result for the user
+                summary_action = await self.decide_next_action(history)
+                print(f"Agent summary action: {summary_action}")
+                if summary_action["type"] == "message":
+                    responses.append(summary_action["content"])
+                    state = "DONE"
+                elif summary_action["type"] == "tool_call":
+                    agent_action = summary_action
+                    state = "AGENT_TOOL_CALL"
+                else:
+                    # If agent does not summarize, provide a default summary based on the tool
+                    print(f"Using default summary for tool: {last_tool}")
+                    if last_tool == "create_calendar_event":
+                        responses.append("I've scheduled your workout. You'll receive a calendar invitation shortly.")
+                    elif last_tool == "get_calendar_events":
+                        responses.append(f"Here are your upcoming workouts: {tool_result}")
+                    elif last_tool == "get_directions":
+                        responses.append(f"Here are the directions to your workout location: {tool_result}")
+                    else:
+                        responses.append(f"I've completed your request. Here's what I found: {tool_result}")
+                    state = "DONE"
+
+        # Final fallback: if responses is empty but we have a tool_result and last_tool, return the default summary
+        if not responses and tool_result and last_tool:
+            print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
+            if last_tool == "create_calendar_event":
+                responses.append("I've scheduled your workout. You'll receive a calendar invitation shortly.")
+            elif last_tool == "get_calendar_events":
+                responses.append(f"Here are your upcoming workouts: {tool_result}")
+            elif last_tool == "get_directions":
+                responses.append(f"Here are the directions to your workout location: {tool_result}")
+            else:
+                responses.append(f"I've completed your request. Here's what I found: {tool_result}")
+
+        final_response = "\n\n".join(responses)
+        print(f"Final response: {final_response}")
+        return final_response
+
     async def process_messages(self, messages):
         """Process a list of messages and return a response."""
         if not self.agent:
             raise RuntimeError("Agent not initialized. Call async_init() first.")
-            
+
         # Convert messages to the format expected by the agent
         input_messages = []
         for msg in messages:
@@ -148,13 +489,51 @@ class PersonalTrainerAgent:
             else:
                 input_messages.append(msg)
 
-        # Process the messages
-        response = await self.agent.ainvoke({"input": input_messages, "intermediate_steps": []})
-        if hasattr(response, "return_values"):
-            return response.return_values["output"]
-        else:
-            # Fallback for intermediate or action log responses
-            return str(response)
+        # Use the new agent_conversation_loop for multi-step orchestration
+        return await self.agent_conversation_loop(input_messages)
+
+    def _parse_tool_string(self, output_str):
+        """Parse tool name and input from a raw tool invocation string."""
+        tool_start = output_str.find("tool='") + 6
+        tool_end = output_str.find("'", tool_start)
+        tool_name = output_str[tool_start:tool_end]
+        input_start = output_str.find("tool_input='") + 11
+        input_end = output_str.find("'", input_start)
+        tool_input = output_str[input_start:input_end]
+        return tool_name, tool_input
+
+    async def _execute_tool(self, tool_name, tool_input):
+        # Use a simple JSON parsing approach for testing
+        if isinstance(tool_input, str) and tool_input.strip().startswith('{'):
+            try:
+                args = json.loads(tool_input)
+                if tool_name == "get_directions":
+                    return await self.maps_service.get_directions(args.get('origin', ''), args.get('destination', ''))
+                # Add other tools as needed
+            except Exception as e:
+                print(f"Error parsing tool arguments: {e}")
+                # Fallback to the original behavior
+                pass
+        # Fallback to the original behavior if not a JSON string or parsing fails
+        if tool_name == "get_calendar_events":
+            return await self.calendar_service.get_upcoming_events(tool_input)
+        elif tool_name == "create_calendar_event":
+            return await self.calendar_service.write_event(tool_input)
+        elif tool_name == "send_email":
+            return await self.gmail_service.send_message(tool_input)
+        elif tool_name == "create_task":
+            return await self.tasks_service.create_task(tool_input)
+        elif tool_name == "get_tasks":
+            return await self.tasks_service.get_tasks(tool_input)
+        elif tool_name == "search_drive":
+            return await self.drive_service.list_files(tool_input)
+        elif tool_name == "get_sheet_data":
+            return await self.sheets_service.get_sheet_data(tool_input)
+        elif tool_name == "get_directions":
+            return await self.maps_service.get_directions(tool_input)
+        elif tool_name == "find_nearby_workout_locations":
+            return await self.maps_service.find_nearby_workout_locations(tool_input)
+        return None
 
     def _create_tools(self):
         """Create the tools for the agent."""
@@ -221,6 +600,11 @@ class PersonalTrainerAgent:
                     name="get_directions",
                     func=self.maps_service.get_directions,
                     description="Get directions between two locations"
+                ),
+                Tool(
+                    name="find_nearby_workout_locations",
+                    func=self.maps_service.find_nearby_workout_locations,
+                    description="Find nearby workout locations (gyms, fitness centers, etc.) near a given location"
                 )
             ])
         logger.info(f"Created {len(tools)} tools for agent")

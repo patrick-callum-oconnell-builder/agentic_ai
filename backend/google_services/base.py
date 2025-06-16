@@ -51,11 +51,17 @@ class GoogleServiceBase(ABC):
         logger.debug("GoogleServiceBase cleanup completed")
 
 class GoogleAPIService:
-    """Base class for Google APIs that require an explicit API key (not OAuth2)."""
+    """Base class for Google API services."""
+    
     def __init__(self, api_key_env_var: str):
+        """Initialize the service with API key from environment variable."""
         logger.debug(f"Initializing GoogleAPIService with API key from {api_key_env_var}...")
-        self.api_key = os.getenv(api_key_env_var)
-        if not self.api_key:
-            logger.error(f"API key not set in environment variable {api_key_env_var}")
-            raise ValueError(f"API key not set in environment variable {api_key_env_var}.")
-        logger.debug("GoogleAPIService initialized successfully") 
+        # Check if api_key_env_var is actually an API key (starts with AIza)
+        if api_key_env_var.startswith('AIza'):
+            self.api_key = api_key_env_var
+        else:
+            self.api_key = os.getenv(api_key_env_var)
+            if not self.api_key:
+                logger.error(f"API key not set in environment variable {api_key_env_var}")
+                raise ValueError(f"API key not set in environment variable {api_key_env_var}.")
+        logger.debug("API key loaded successfully") 

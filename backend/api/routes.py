@@ -29,6 +29,7 @@ fitness_service = None
 tasks_service = None
 drive_service = None
 sheets_service = None
+_agent = None
 
 async def initialize_services():
     """Initialize all Google services asynchronously."""
@@ -47,18 +48,20 @@ async def initialize_services():
         logger.error(f"Failed to initialize services: {str(e)}")
         raise RuntimeError(f"Failed to initialize services: {str(e)}")
 
-def get_agent():
-    """Create a new PersonalTrainerAgent with the global service instances."""
-    if not all([calendar_service, gmail_service, maps_service, fitness_service, tasks_service, drive_service, sheets_service]):
-        raise RuntimeError("Services not initialized. Please ensure the application has started properly.")
-    return PersonalTrainerAgent(
-        calendar_service=calendar_service,
-        gmail_service=gmail_service,
-        tasks_service=tasks_service,
-        drive_service=drive_service,
-        sheets_service=sheets_service,
-        maps_service=maps_service
-    )
+async def get_agent():
+    """Get or create an agent instance."""
+    global _agent
+    if not _agent:
+        _agent = PersonalTrainerAgent(
+            calendar_service=calendar_service,
+            gmail_service=gmail_service,
+            tasks_service=tasks_service,
+            drive_service=drive_service,
+            sheets_service=sheets_service,
+            maps_service=maps_service
+        )
+        await _agent.async_init()
+    return _agent
 
 class Message(BaseModel):
     role: str
@@ -77,53 +80,47 @@ async def health_check():
 
 @router.post("/chat")
 async def chat(request: ChatRequest, background_tasks: BackgroundTasks, x_api_key: Optional[str] = Header(None)):
-    """Chat endpoint for interacting with the agent."""
-    logger.info(f"Chat endpoint called with {len(request.messages)} messages")
-    # Convert Pydantic Message objects to dicts
-    raw_messages = [msg.dict() if hasattr(msg, 'dict') else msg for msg in request.messages]
-    logger.debug(f"Raw incoming messages: {raw_messages}")
-    # Normalize messages
-    normalized_messages = []
-    for i, msg in enumerate(raw_messages):
-        if not isinstance(msg, dict):
-            logger.error(f"Message {i} is not a dict: {msg}")
-            continue
-        if 'role' not in msg or 'content' not in msg:
-            logger.error(f"Message {i} missing required fields: {msg}")
-            continue
-        role = msg['role']
-        content = msg['content']
-        if role not in {"user", "assistant", "system"}:
-            logger.error(f"Message {i} has invalid role: {role}")
-            continue
-        normalized = {"role": role, "content": content.strip()}
-        logger.debug(f"Successfully normalized message {i}: {msg} -> {normalized}")
-        normalized_messages.append(normalized)
-    logger.debug(f"Normalized messages to be processed: {normalized_messages}")
-
-    if not normalized_messages:
-        logger.error("No valid messages after normalization")
-        raise HTTPException(status_code=400, detail="No valid messages to process")
-
-    # Convert normalized messages to LangChain message objects
-    agent = get_agent()  # Create a new agent per request
-    converted_messages = []
-    for i, msg in enumerate(normalized_messages):
-        converted = agent._convert_message(msg)
-        if converted:
-            converted_messages.append(converted)
-            logger.debug(f"Converted normalized message {i}: {msg} -> {converted}")
-        else:
-            logger.error(f"Failed to convert normalized message {i}: {msg}")
-            raise HTTPException(status_code=400, detail=f"Failed to convert message {i} to LangChain message object.")
-
     try:
-        # Process messages with converted history
-        response = await agent.process_messages(converted_messages)
+        logger.info(f"Chat endpoint called with {len(request.messages)} messages")
+        # Convert Pydantic Message objects to dicts
+        raw_messages = [msg.dict() if hasattr(msg, 'dict') else msg for msg in request.messages]
+        logger.debug(f"Raw incoming messages: {raw_messages}")
+        # Normalize messages
+        normalized_messages = []
+        for i, msg in enumerate(raw_messages):
+            if not isinstance(msg, dict):
+                logger.error(f"Message {i} is not a dict: {msg}")
+                continue
+            if 'role' not in msg or 'content' not in msg:
+                logger.error(f"Message {i} missing required fields: {msg}")
+                continue
+            role = msg['role']
+            content = msg['content']
+            if role not in {"user", "assistant", "system"}:
+                logger.error(f"Message {i} has invalid role: {role}")
+                continue
+            normalized = {"role": role, "content": content.strip()}
+            logger.debug(f"Successfully normalized message {i}: {msg} -> {normalized}")
+            normalized_messages.append(normalized)
+        logger.debug(f"Normalized messages to be processed: {normalized_messages}")
+
+        if not normalized_messages:
+            logger.error("No valid messages after normalization")
+            raise HTTPException(status_code=400, detail="No valid messages to process")
+
+        # Get the agent and process messages
+        agent = await get_agent()
+        response = await agent.process_messages(normalized_messages)
         logger.info("Successfully processed messages")
         return {"response": response}
     except Exception as e:
-        logger.error(f"Error processing messages: {str(e)}", exc_info=True)
+        import traceback
+        logger.error(f"Error in /chat endpoint: {str(e)}", exc_info=True)
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        for handler in logger.handlers:
+            handler.flush()
+        with open("backend_error.log", "a") as f:
+            f.write("TOP-LEVEL ERROR:\n" + traceback.format_exc() + "\n")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/calendar/events")

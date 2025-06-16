@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
@@ -10,117 +10,157 @@ import os
 import logging
 import pickle
 from backend.google_services.base import GoogleAPIService
-import googlemaps
+from googlemaps import Client
 
 logger = logging.getLogger(__name__)
 
 class GoogleMapsService(GoogleAPIService):
     """Service for interacting with Google Maps API."""
     
-    def __init__(self):
-        """Initialize the Google Maps service."""
-        super().__init__('GOOGLE_MAPS_API_KEY')
-        self.service = self.initialize_service()
+    def __init__(self, api_key: str):
+        """Initialize the Google Maps service with an API key."""
+        super().__init__(api_key)
+        self.client = Client(key=self.api_key)
+        self.places_service = self.client.places
+        self.directions_service = self.client.directions
 
-    def get_directions(self, origin: str, destination: str, mode: str = "driving") -> Dict:
-        """
-        Get directions between two locations.
-        
-        Args:
-            origin (str): Starting location
-            destination (str): Ending location
-            mode (str): Travel mode (driving, walking, bicycling, transit)
-            
-        Returns:
-            Dict: Directions data
-        """
+    async def get_directions(self, origin: str, destination: str) -> str:
+        """Get directions between two locations using the Routes API."""
         try:
-            client = googlemaps.Client(key=self.api_key)
-            return client.directions(origin, destination, mode=mode)
+            # Use the new Routes API
+            result = self.directions_service(
+                origin=origin,
+                destination=destination,
+                mode="driving",
+                alternatives=True
+            )
+            
+            if not result:
+                return "No directions found."
+            
+            # Format the directions
+            directions = []
+            for route in result:
+                steps = []
+                for step in route['legs'][0]['steps']:
+                    steps.append(step['html_instructions'])
+                directions.append({
+                    'distance': route['legs'][0]['distance']['text'],
+                    'duration': route['legs'][0]['duration']['text'],
+                    'steps': steps
+                })
+            
+            # Format the response
+            response = []
+            for i, route in enumerate(directions, 1):
+                response.append(f"Route {i}:")
+                response.append(f"Distance: {route['distance']}")
+                response.append(f"Duration: {route['duration']}")
+                response.append("Steps:")
+                for step in route['steps']:
+                    response.append(f"- {step}")
+                response.append("")
+            
+            return "\n".join(response)
+            
         except Exception as e:
-            logger.error(f"Error getting directions: {e}")
-            raise
-            
-    def get_place_details(self, place_id: str) -> Dict:
-        """
-        Get details for a specific place.
-        
-        Args:
-            place_id (str): Google Place ID
-            
-        Returns:
-            Dict: Place details
-        """
+            logger.error(f"Error getting directions: {str(e)}")
+            return f"Error getting directions: {str(e)}"
+
+    async def find_nearby_places(self, location: str, radius: int = 5000, type: str = "gym") -> str:
+        """Find nearby places using the Places API."""
         try:
-            client = googlemaps.Client(key=self.api_key)
-            return client.place(place_id)
+            # Use the new Places API
+            result = self.places_service.nearby_search(
+                location=location,
+                radius=radius,
+                type=type
+            )
+            
+            if not result or 'results' not in result:
+                return "No places found."
+            
+            # Format the results
+            places = []
+            for place in result['results']:
+                places.append({
+                    'name': place['name'],
+                    'address': place.get('vicinity', 'No address available'),
+                    'rating': place.get('rating', 'No rating'),
+                    'types': place.get('types', [])
+                })
+            
+            # Format the response
+            response = []
+            for i, place in enumerate(places, 1):
+                response.append(f"{i}. {place['name']}")
+                response.append(f"   Address: {place['address']}")
+                response.append(f"   Rating: {place['rating']}")
+                response.append(f"   Types: {', '.join(place['types'])}")
+                response.append("")
+            
+            return "\n".join(response)
+            
+        except Exception as e:
+            logger.error(f"Error finding nearby places: {str(e)}")
+            return f"Error finding nearby places: {str(e)}"
+
+    def get_place_details(self, place_id: str) -> Dict:
+        """Get detailed information about a place."""
+        try:
+            return self.client.place(place_id)
         except Exception as e:
             logger.error(f"Error getting place details: {e}")
             raise
-            
-    def search_places(self, query: str, location: Optional[Dict[str, float]] = None, radius: Optional[int] = None) -> List[Dict]:
-        """
-        Search for places matching a query.
-        
-        Args:
-            query (str): Search query
-            location (Dict[str, float], optional): Location to search around (lat, lng)
-            radius (int, optional): Search radius in meters
-            
-        Returns:
-            List[Dict]: List of matching places
-        """
+
+    def search_places(self, query: str, location: Optional[Dict[str, float]] = None, radius: int = 5000) -> Dict:
+        """Search for places matching a query."""
         try:
-            client = googlemaps.Client(key=self.api_key)
-            return client.places(query, location=location, radius=radius)
+            return self.client.places(query, location=location, radius=radius)
         except Exception as e:
             logger.error(f"Error searching places: {e}")
             raise
-            
+
     def get_distance_matrix(self, origins: List[str], destinations: List[str], mode: str = "driving") -> Dict:
-        """
-        Get distance and duration between multiple origins and destinations.
-        
-        Args:
-            origins (List[str]): List of origin locations
-            destinations (List[str]): List of destination locations
-            mode (str): Travel mode (driving, walking, bicycling, transit)
-            
-        Returns:
-            Dict: Distance matrix data
-        """
+        """Get distance and duration between multiple origins and destinations."""
         try:
-            client = googlemaps.Client(key=self.api_key)
-            return client.distance_matrix(origins, destinations, mode=mode)
+            return self.client.distance_matrix(origins, destinations, mode=mode)
         except Exception as e:
             logger.error(f"Error getting distance matrix: {e}")
             raise
-            
+
     def __del__(self):
         """Cleanup when the service is destroyed."""
-        self._client = None
+        self.client = None
 
-    def find_nearby_workout_locations(self, location: Dict[str, float], radius: int = 5000) -> List[Dict]:
-        """
-        Find nearby workout locations using Google Maps.
-        
-        Args:
-            location (Dict[str, float]): Location to search from (lat, lng)
-            radius (int): Search radius in meters
-            
-        Returns:
-            List[Dict]: List of location metadata
-        """
+    def find_nearby_workout_locations(self, location: Union[Dict[str, float], str], radius: int = 5000) -> List[Dict]:
+        """Find nearby workout locations (gyms, fitness centers, etc.)."""
         try:
-            # Format location as a tuple
-            location_tuple = (location['lat'], location['lng'])
+            # Convert location to tuple if it's a string
+            if isinstance(location, str):
+                # Geocode the location if it's a natural language query
+                geocode_result = self.client.geocode(location)
+                if not geocode_result:
+                    raise ValueError(f"Could not geocode location: {location}")
+                location_tuple = (
+                    geocode_result[0]['geometry']['location']['lat'],
+                    geocode_result[0]['geometry']['location']['lng']
+                )
+            else:
+                location_tuple = (location['lat'], location['lng'])
+
             # Use the googlemaps client to search for gyms and fitness centers
-            places_result = self.service.places_nearby(
+            places_result = self.client.places_nearby(
                 location=location_tuple,
                 radius=radius,
                 type='gym'
             )
-            return places_result.get('results', [])
+            
+            if not places_result or 'results' not in places_result:
+                return []
+            
+            return places_result['results']
+            
         except Exception as e:
             logger.error(f"Error finding nearby workout locations: {e}")
             raise
@@ -177,4 +217,4 @@ class GoogleMapsService(GoogleAPIService):
 
     def initialize_service(self):
         """Initialize the Google Maps service."""
-        return googlemaps.Client(key=self.api_key) 
+        return self.client 

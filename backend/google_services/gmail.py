@@ -65,6 +65,18 @@ class GoogleGmailService(GoogleServiceBase):
     def search_emails(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """Search for emails matching a specific query."""
         try:
+            # Convert natural language query to Gmail search syntax if needed
+            if 'this week' in query.lower():
+                query = f"{query} after:{datetime.now().strftime('%Y/%m/%d')}"
+            elif 'last week' in query.lower():
+                last_week = datetime.now() - timedelta(days=7)
+                query = f"{query} after:{last_week.strftime('%Y/%m/%d')} before:{datetime.now().strftime('%Y/%m/%d')}"
+            elif 'this month' in query.lower():
+                query = f"{query} after:{datetime.now().strftime('%Y/%m/01')}"
+            elif 'last month' in query.lower():
+                last_month = datetime.now() - timedelta(days=30)
+                query = f"{query} after:{last_month.strftime('%Y/%m/01')} before:{datetime.now().strftime('%Y/%m/01')}"
+
             results = self.service.users().messages().list(
                 userId='me',
                 q=query,

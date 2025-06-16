@@ -8,6 +8,7 @@ from typing import List, Dict, Optional, Any
 import logging
 from backend.google_services.base import GoogleServiceBase
 from backend.google_services.auth import get_google_credentials
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -385,19 +386,40 @@ class GoogleSheetsService(GoogleServiceBase):
         # Already authenticated in base class
         pass
 
-    def get_sheet_data(self, spreadsheet_id: str, range_name: str) -> List[List[Any]]:
+    def get_sheet_data(self, spreadsheet_id: str, range_name: str, query: str = None) -> List[List[Any]]:
         """
         Get data from a specific range in the spreadsheet.
         
         Args:
             spreadsheet_id (str): ID of the spreadsheet
             range_name (str): Range to read (e.g., 'Sheet1!A1:B2')
+            query (str, optional): Natural language query (e.g., 'this week', 'this month')
             
         Returns:
             List[List[Any]]: Values from the range
         """
         try:
-            return self.get_values(spreadsheet_id, range_name)
+            data = self.get_values(spreadsheet_id, range_name)
+            
+            if query and data:
+                # Assume first column is date
+                date_col_idx = 0
+                now = datetime.now()
+                
+                if 'this week' in query.lower():
+                    start_date = now
+                    end_date = start_date + timedelta(days=7)
+                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
+                elif 'this month' in query.lower():
+                    start_date = now
+                    end_date = start_date + timedelta(days=30)
+                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
+                elif 'last month' in query.lower():
+                    end_date = now
+                    start_date = end_date - timedelta(days=30)
+                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
+            
+            return data
         except Exception as e:
             logger.error(f"Error getting sheet data: {e}")
             raise 
