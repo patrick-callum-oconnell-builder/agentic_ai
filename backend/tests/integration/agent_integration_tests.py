@@ -6,6 +6,7 @@ import pytest
 import asyncio
 from datetime import datetime
 import httpx
+from langchain_core.messages import HumanMessage
 
 # Add the backend directory to the Python path
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -35,21 +36,20 @@ class TestAgentIntegration(unittest.TestCase):
     @pytest.mark.asyncio
     async def test_basic_greeting(self):
         """Test that the agent can handle a basic greeting without errors."""
-        try:
-            messages = [{"role": "user", "content": "Hi, how are you?"}]
-            response = await self.agent.process_messages(messages)
-            print(f"Agent response: {response}")
-            self.assertIsNotNone(response)
-            self.assertIsInstance(response, str)
-            self.assertTrue(len(response) > 0)
-            self.assertNotIn("error", response.lower(), "Response should not contain the word 'error'")
-            self.assertNotEqual(response, "No response generated", "Agent should not return 'No response generated'")
-        except Exception as e:
-            self.fail(f"Agent failed to process basic greeting: {str(e)}")
+        await self.agent.async_init()
+        messages = [{"role": "user", "content": "Hi, how are you?"}]
+        response = await self.agent.process_messages(messages)
+        print(f"Agent response: {response}")
+        self.assertIsNotNone(response)
+        self.assertIsInstance(response, str)
+        self.assertTrue(len(response) > 0)
+        self.assertNotIn("error", response.lower(), "Response should not contain the word 'error'")
+        self.assertNotEqual(response, "No response generated", "Agent should not return 'No response generated'")
 
     @pytest.mark.asyncio
     async def test_no_tool_call_on_greeting(self):
         """Test that a simple greeting does not trigger a tool call and returns a direct LLM response."""
+        await self.agent.async_init()
         messages = [{"role": "user", "content": "hello"}]
         response = await self.agent.process_messages(messages)
         print(f"Agent response: {response}")

@@ -3,6 +3,7 @@ import sys
 import unittest
 from unittest.mock import MagicMock, patch
 from dotenv import load_dotenv
+import asyncio
 
 # Add the backend directory to the Python path
 backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -54,6 +55,8 @@ class BaseGoogleIntegrationTest(unittest.TestCase):
             sheets_service=cls.sheets_service,
             maps_service=cls.maps_service
         )
+        # Ensure async agent initialization
+        asyncio.get_event_loop().run_until_complete(cls.agent.async_init())
     
     def setUp(self):
         """Set up test fixtures before each test method."""
