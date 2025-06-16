@@ -50,4 +50,8 @@ htmlcov/
 coverage.xml
 
 # Ignore any other sensitive config
-secrets.* 
+secrets.*
+
+# Ignore Google Cloud SDK
+google-cloud-sdk/
+*.tar.gz 

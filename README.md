@@ -1,14 +1,16 @@
 # AI Personal Trainer
 
-An AI-powered personal trainer application that helps users with their fitness goals, schedule workouts, and provides motivation. The application integrates with Google Calendar and Gmail to provide personalized assistance.
+An AI-powered personal trainer application that helps users with their fitness goals (scheduling workouts in their calendar, meal-prepping, etc). The application integrates with Google cloud services so the agent can automate the work associated with these tasks and save the user time.
 
 ## Features
 
-- Chat interface similar to ChatGPT
-- Integration with Google Calendar for scheduling
-- Integration with Gmail for context-aware responses
-- AI-powered workout suggestions and fitness advice
-- Real-time conversation with the AI personal trainer
+- Real-time conversation with the AI personal trainer.
+- Integration with Google Calendar, Gmail, Google Maps, Google Drive, etc. 
+- AI-powered workout suggestions and fitness advice that is context-aware relative to the data corpus provided in the chat and across the Google services.
+
+## Architecture / Frameworks
+
+Built with a modern Python FastAPI backend, LangGraph agent orchestration, and a React/MUI frontend for a clean, interactive user experience.
 
 ## Prerequisites
 

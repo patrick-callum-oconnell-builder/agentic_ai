@@ -55,10 +55,9 @@ class PersonalTrainerAgent:
         self.tomorrow_date = self._get_tomorrow_date()
         logger.debug("Creating agent...")
         try:
-            self.agent = self._create_agent()
+            self.agent = asyncio.run(self._create_agent_workflow())
         except Exception as e:
             logger.error(f"Error creating agent: {e}")
-            traceback.print_exc()
             raise
         logger.info("PersonalTrainerAgent initialized successfully")
         self._state_lock = asyncio.Lock()
@@ -198,249 +197,9 @@ class PersonalTrainerAgent:
             
             else:
                 return f"Error: Unknown calendar action '{action}'"
-                
         except Exception as e:
             logger.error(f"[GoogleCalendar] Error handling operation: {e}")
-            return f"Error handling calendar operation: {str(e)}"
-
-    def _create_agent(self):
-        """Create the agent with the prompt and tools using LangGraph."""
-        logger.debug("Creating agent with LangGraph...")
-        
-        # Define the end node
-        def end_node(state: AgentState):
-            logger.info("End node called. Conversation is ending.")
-            logger.debug(f"[end_node] state.messages: {state.messages}")
-            return {
-                "messages": state.messages,
-                "status": "done",
-                "next": "end"
-            }
-
-        # Define the agent node
-        async def agent_node(state):
-            logger.info("[agent_node] Starting agent node")
-            state = ensure_agent_state(state)
-            logger.info(f"[agent_node] State before processing: {state}")
-            
-            messages = state.messages
-            if not messages:
-                logger.error("[agent_node] No messages in state")
-                state = AgentState(
-                    messages=[AIMessage(content="I apologize, but I couldn't process your request. Please try again.")],
-                    status="error"
-                )
-                return state.to_dict()
-            
-            try:
-                # If we have a tool result, generate a post-tool-call confirmation
-                if state.last_tool_result is not None:
-                    logger.info("[agent_node] Processing last_tool_result for post-tool-call confirmation")
-                    # Add the tool result as a message for the LLM to see
-                    tool_result_message = AIMessage(content=f"[TOOL RESULT]: {state.last_tool_result}")
-                    # Add a system message to instruct the LLM
-                    system_message = SystemMessage(content="You have just completed a tool action. Now, confirm the outcome to the user in natural language, including any relevant details from the tool result.")
-                    llm_messages = [system_message] + messages + [tool_result_message]
-                    response = await self.llm.ainvoke(llm_messages)
-                    logger.info(f"[agent_node] LLM follow-up response received: {response}")
-                    response_nl = AIMessage(content=response.content)
-                    state = AgentState(
-                        messages=messages + [tool_result_message, response_nl],
-                        status="done",
-                        missing_fields=state.missing_fields,
-                        last_tool_result=None
-                    )
-                    logger.info(f"[agent_node] Final state after confirmation: {state}")
-                    return state.to_dict()
-                
-                system_message = SystemMessage(content=AGENT_PERSONAL_TRAINER_FULL_GUIDELINES_PROMPT)
-                llm_messages = [system_message] + messages
-                logger.info(f"[agent_node] Calling LLM with {len(llm_messages)} messages")
-                logger.debug(f"[agent_node] LLM messages: {llm_messages}")
-                
-                response = await self.llm.ainvoke(llm_messages)
-                logger.info(f"[agent_node] LLM response received: {response}")
-                logger.debug(f"[agent_node] LLM response type: {type(response)}")
-                logger.debug(f"[agent_node] LLM response content: {response.content}")
-                logger.debug(f"[agent_node] LLM response additional_kwargs: {getattr(response, 'additional_kwargs', {})}")
-                
-                tool_calls = response.additional_kwargs.get("tool_calls", [])
-                logger.info(f"[agent_node] Tool calls found: {tool_calls}")
-                
-                # Only add the natural language part to messages
-                nl_content = self._extract_natural_language(response.content)
-                response_nl = AIMessage(content=nl_content)
-                
-                # Detect tool call syntax in content if tool_calls is empty
-                has_tool_call_syntax = "Tool Call:" in response.content
-                if tool_calls or has_tool_call_syntax:
-                    logger.info("[agent_node] Detected tool call (structured or syntax), setting status to awaiting_tool")
-                    state = AgentState(
-                        messages=messages + [response_nl],
-                        status="awaiting_tool",
-                        missing_fields=state.missing_fields,
-                        last_tool_result=None
-                    )
-                else:
-                    logger.info("[agent_node] No tool calls, setting status to done")
-                    state = AgentState(
-                        messages=messages + [response_nl],
-                        status="done",
-                        missing_fields=state.missing_fields,
-                        last_tool_result=None
-                    )
-                logger.info(f"[agent_node] Final state: {state}")
-                return state.to_dict()
-            except Exception as e:
-                logger.error(f"[agent_node] Error: {e}", exc_info=True)
-                state = AgentState(
-                    messages=messages + [AIMessage(content=f"I apologize, but I encountered an error: {str(e)}")],
-                    status="error"
-                )
-                return state.to_dict()
-
-        # Define the tool node
-        def ensure_agent_state(state):
-            if isinstance(state, AgentState):
-                return state
-            elif isinstance(state, dict):
-                return AgentState.from_dict(state)
-            else:
-                raise ValueError(f"Invalid state type: {type(state)}")
-
-        async def tool_node(state):
-            logger.info("[tool_node] Starting tool node")
-            state = ensure_agent_state(state)
-            logger.info(f"[tool_node] State before processing: {state}")
-            
-            messages = state.messages
-            if not messages:
-                logger.error("[tool_node] No messages in state")
-                state = AgentState(
-                    messages=[AIMessage(content="I apologize, but I couldn't process your request. Please try again.")],
-                    status="error"
-                )
-                return state.to_dict()
-            
-            try:
-                last_message = messages[-1]
-                tool_calls = getattr(last_message, 'additional_kwargs', {}).get("tool_calls", [])
-                logger.info(f"[tool_node] Tool calls found: {tool_calls}")
-                
-                # If no structured tool_calls, try to parse from content
-                if not tool_calls:
-                    import re
-                    import ast
-                    content = getattr(last_message, 'content', '')
-                    # Find all tool calls in the message, even with newlines or extra text
-                    matches = re.findall(r'Tool Call:\s*(\w+)\((.*?)\)', content, re.DOTALL | re.IGNORECASE)
-                    if matches:
-                        tool_name, args_str = matches[0]
-                        tool_args = {}
-                        arg_pairs = re.findall(r'(\w+)\s*=\s*({.*?}|\".*?\"|\'.*?\'|[^,]+)', args_str)
-                        for k, v in arg_pairs:
-                            v = v.strip()
-                            if v.startswith('{') and v.endswith('}'):
-                                try:
-                                    tool_args[k] = ast.literal_eval(v)
-                                except Exception:
-                                    try:
-                                        tool_args[k] = json.loads(v)
-                                    except Exception:
-                                        tool_args[k] = v
-                            elif (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
-                                tool_args[k] = v[1:-1]
-                            else:
-                                tool_args[k] = v
-                        tool_calls = [{
-                            "function": {
-                                "name": tool_name,
-                                "arguments": json.dumps(tool_args)
-                            }
-                        }]
-                        logger.info(f"[tool_node] Parsed tool call from content: {tool_calls}")
-                
-                if not tool_calls:
-                    logger.info("[tool_node] No tool calls, setting status to done")
-                    state = AgentState(
-                        messages=messages,
-                        status="done",
-                        missing_fields=state.missing_fields,
-                        last_tool_result=state.last_tool_result
-                    )
-                    return state.to_dict()
-                
-                tool_call = tool_calls[0]
-                tool_name = tool_call["function"]["name"]
-                tool_args = json.loads(tool_call["function"]["arguments"])
-                logger.info(f"[tool_node] Executing tool: {tool_name} with args: {tool_args}")
-                
-                tool = next((t for t in self.tools if t.name == tool_name), None)
-                if not tool:
-                    logger.error(f"[tool_node] Tool {tool_name} not found")
-                    state = AgentState(
-                        messages=messages + [AIMessage(content=f"I apologize, but I couldn't find the tool {tool_name}.")],
-                        status="error"
-                    )
-                    return state.to_dict()
-                
-                try:
-                    logger.info(f"[tool_node] Invoking tool {tool_name}")
-                    result = await tool.ainvoke(tool_args)
-                    logger.info(f"[tool_node] Tool {tool_name} executed successfully")
-                    
-                    # After tool execution, set status to active to allow the agent to process the result
-                    state = AgentState(
-                        messages=messages,
-                        status="active",
-                        missing_fields=state.missing_fields,
-                        last_tool_result=result
-                    )
-                    logger.info(f"[tool_node] Final state: {state}")
-                    return state.to_dict()
-                except Exception as e:
-                    logger.error(f"[tool_node] Error executing tool {tool_name}: {e}")
-                    state = AgentState(
-                        messages=messages + [AIMessage(content=f"I apologize, but I encountered an error while using {tool_name}: {str(e)}")],
-                        status="error"
-                    )
-                    return state.to_dict()
-            except Exception as e:
-                logger.error(f"[tool_node] Error: {e}")
-                state = AgentState(
-                    messages=messages + [AIMessage(content=f"I apologize, but I encountered an error: {str(e)}")],
-                    status="error"
-                )
-                return state.to_dict()
-
-        # Create the graph
-        logger.info("[_create_agent_workflow] Creating workflow graph")
-        workflow = StateGraph(AgentState)
-        
-        # Add nodes
-        workflow.add_node("agent", agent_node)
-        workflow.add_node("tool", tool_node)
-        workflow.add_node("end", end_node)
-        
-        # Add edges with proper conditions
-        def agent_router(state):
-            if state.status == "awaiting_tool":
-                return "tool"
-            return "end"
-            
-        def tool_router(state):
-            if state.status == "active":
-                return "agent"
-            return "end"
-        
-        workflow.add_conditional_edges("agent", agent_router)
-        workflow.add_conditional_edges("tool", tool_router)
-        
-        # Set entry point
-        workflow.set_entry_point("agent")
-        logger.info("[_create_agent_workflow] Workflow graph created")
-        
-        return workflow.compile()
+            return f"Error: {str(e)}"
 
     def _convert_message(self, msg):
         """Convert a message dict to a LangChain message object, with robust logging and error handling."""
@@ -902,17 +661,22 @@ Workout Tasks: {tasks}
         workflow.add_node("tool", tool_node)
         workflow.add_node("end", end_node)
         
-        # Add edges with proper conditions
+        # Define router functions
         def agent_router(state):
             if state.status == "awaiting_tool":
                 return "tool"
+            elif state.status == "active" and state.last_tool_result is not None:
+                return "agent"
             return "end"
             
         def tool_router(state):
             if state.status == "active":
                 return "agent"
+            elif state.status == "awaiting_tool":
+                return "tool"
             return "end"
         
+        # Add edges
         workflow.add_conditional_edges("agent", agent_router)
         workflow.add_conditional_edges("tool", tool_router)
         
