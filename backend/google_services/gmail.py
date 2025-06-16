@@ -1,0 +1,274 @@
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+import os
+import pickle
+from typing import List, Dict, Any
+import logging
+from backend.google_services.base import GoogleServiceBase
+from backend.google_services.auth import get_google_credentials
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timedelta
+import base64
+
+logger = logging.getLogger(__name__)
+
+class GoogleGmailService(GoogleServiceBase):
+    """Service for interacting with Gmail API."""
+    
+    def __init__(self):
+        """Initialize the Gmail service."""
+        self.SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+        self.creds = None
+        self.service = self.initialize_service()
+
+    def initialize_service(self):
+        """Initialize the Google Gmail service using the new OAuth flow."""
+        self.creds = get_google_credentials()
+        return build('gmail', 'v1', credentials=self.creds)
+
+    def get_recent_emails(self, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Get recent emails from the user's Gmail."""
+        try:
+            results = self.service.users().messages().list(
+                userId='me',
+                maxResults=max_results
+            ).execute()
+            
+            messages = results.get('messages', [])
+            emails = []
+            
+            for message in messages:
+                msg = self.service.users().messages().get(
+                    userId='me',
+                    id=message['id']
+                ).execute()
+                
+                headers = msg['payload']['headers']
+                subject = next(h['value'] for h in headers if h['name'] == 'Subject')
+                sender = next(h['value'] for h in headers if h['name'] == 'From')
+                
+                emails.append({
+                    'id': message['id'],
+                    'subject': subject,
+                    'sender': sender,
+                    'snippet': msg['snippet']
+                })
+            
+            return emails
+        except Exception as e:
+            logger.error(f"Error fetching emails: {e}")
+            raise
+
+    def search_emails(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Search for emails matching a specific query."""
+        try:
+            results = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=max_results
+            ).execute()
+            messages = results.get('messages', [])
+            
+            emails = []
+            for message in messages:
+                msg = self.service.users().messages().get(
+                    userId='me',
+                    id=message['id']
+                ).execute()
+                
+                headers = msg['payload']['headers']
+                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+                sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown Sender')
+                
+                emails.append({
+                    'id': message['id'],
+                    'subject': subject,
+                    'sender': sender,
+                    'snippet': msg['snippet']
+                })
+            
+            return emails
+        except Exception as e:
+            logger.error(f"Error searching emails: {e}")
+            raise
+
+    def get_email_content(self, message_id):
+        try:
+            message = self.service.users().messages().get(
+                userId='me',
+                id=message_id,
+                format='full'
+            ).execute()
+            if 'payload' in message and 'parts' in message['payload']:
+                parts = message['payload']['parts']
+                for part in parts:
+                    if part['mimeType'] == 'text/plain':
+                        data = part['body']['data']
+                        text = base64.urlsafe_b64decode(data).decode()
+                        return text
+            return "No content found"
+        except Exception as e:
+            logger.error(f"Error fetching email content: {e}")
+            raise
+
+    def list_messages(self, query: str = '', max_results: int = 10) -> List[Dict]:
+        """
+        List messages in the user's mailbox.
+        
+        Args:
+            query (str): Search query to filter messages
+            max_results (int): Maximum number of messages to return
+            
+        Returns:
+            List[Dict]: List of message metadata
+        """
+        try:
+            results = self.service.users().messages().list(
+                userId='me',
+                q=query,
+                maxResults=max_results
+            ).execute()
+            
+            messages = results.get('messages', [])
+            return messages
+        except Exception as e:
+            logger.error(f"Error listing messages: {e}")
+            raise
+            
+    def get_message(self, message_id: str) -> Dict:
+        """
+        Get a specific message by ID.
+        
+        Args:
+            message_id (str): ID of the message to retrieve
+            
+        Returns:
+            Dict: Message data
+        """
+        try:
+            message = self.service.users().messages().get(
+                userId='me',
+                id=message_id,
+                format='full'
+            ).execute()
+            
+            return message
+        except Exception as e:
+            logger.error(f"Error getting message: {e}")
+            raise
+            
+    def send_message(self, to: str, subject: str, body: str, is_html: bool = False) -> Dict:
+        """
+        Send an email message.
+        
+        Args:
+            to (str): Recipient email address
+            subject (str): Email subject
+            body (str): Email body
+            is_html (bool): Whether the body is HTML
+            
+        Returns:
+            Dict: Sent message data
+        """
+        try:
+            message = MIMEMultipart()
+            message['to'] = to
+            message['subject'] = subject
+            
+            # Attach the body
+            if is_html:
+                msg = MIMEText(body, 'html')
+            else:
+                msg = MIMEText(body)
+            message.attach(msg)
+            
+            # Encode the message
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+            
+            # Send the message
+            sent_message = self.service.users().messages().send(
+                userId='me',
+                body={'raw': raw}
+            ).execute()
+            
+            return sent_message
+        except Exception as e:
+            logger.error(f"Error sending message: {e}")
+            raise
+            
+    def create_draft(self, to: str, subject: str, body: str, is_html: bool = False) -> Dict:
+        """
+        Create a draft email message.
+        
+        Args:
+            to (str): Recipient email address
+            subject (str): Email subject
+            body (str): Email body
+            is_html (bool): Whether the body is HTML
+            
+        Returns:
+            Dict: Draft message data
+        """
+        try:
+            message = MIMEMultipart()
+            message['to'] = to
+            message['subject'] = subject
+            
+            # Attach the body
+            if is_html:
+                msg = MIMEText(body, 'html')
+            else:
+                msg = MIMEText(body)
+            message.attach(msg)
+            
+            # Encode the message
+            raw = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+            
+            # Create the draft
+            draft = self.service.users().drafts().create(
+                userId='me',
+                body={'message': {'raw': raw}}
+            ).execute()
+            
+            return draft
+        except Exception as e:
+            logger.error(f"Error creating draft: {e}")
+            raise
+
+    def authenticate(self):
+        """Authenticate with Gmail API."""
+        self.creds = get_google_credentials()
+        self.service = build('gmail', 'v1', credentials=self.creds)
+
+    def modify_message_labels(self, message_id: str, add_labels: List[str] = None, remove_labels: List[str] = None) -> Dict:
+        """
+        Modify the labels of a message.
+        
+        Args:
+            message_id (str): ID of the message to modify
+            add_labels (List[str]): Labels to add
+            remove_labels (List[str]): Labels to remove
+            
+        Returns:
+            Dict: Modified message data
+        """
+        try:
+            body = {}
+            if add_labels:
+                body['addLabelIds'] = add_labels
+            if remove_labels:
+                body['removeLabelIds'] = remove_labels
+                
+            message = self.service.users().messages().modify(
+                userId='me',
+                id=message_id,
+                body=body
+            ).execute()
+            
+            return message
+        except Exception as e:
+            logger.error(f"Error modifying message labels: {e}")
+            raise 

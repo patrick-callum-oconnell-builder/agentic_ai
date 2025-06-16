@@ -1,0 +1,22 @@
+# Ignore virtual environment
+venv/
+
+# Ignore cache files
+__pycache__/
+*.pyc
+
+# Ignore environment files
+.env
+
+# Ignore token files
+!*.pickle
+!*.json
+
+# Ignore logs
+*.log
+
+# Ignore build directories
+agent_personal_trainer.egg-info/ 
+
+# allow .env file access
+!*backend/.env

@@ -1,0 +1,53 @@
+# Ignore Python cache and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+venv/
+.env
+.env.*
+
+# Ignore Node.js dependencies and build files
+node_modules/
+build/
+dist/
+
+# Ignore log files
+*.log
+logs/
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore editor/project files
+.vscode/
+.idea/
+*.swp
+
+# Ignore test cache
+.pytest_cache/
+
+# Ignore Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Ignore egg-info
+*.egg-info/
+
+# Ignore Google API credentials and tokens
+*.pickle
+token.pickle
+credentials.json
+client_secret.json
+
+# Ignore frontend build artifacts
+frontend/build/
+frontend/dist/
+
+# Ignore coverage reports
+htmlcov/
+.coverage
+coverage.xml
+
+# Ignore any other sensitive config
+secrets.* 
