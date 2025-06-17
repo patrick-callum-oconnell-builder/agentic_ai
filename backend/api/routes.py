@@ -1,7 +1,7 @@
 import logging
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks, Header
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from backend.agent import PersonalTrainerAgent
 from backend.google_services.calendar import GoogleCalendarService
 from backend.google_services.gmail import GoogleGmailService
@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from pydantic import validator
 import asyncio
+import json
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -39,11 +40,11 @@ async def initialize_services():
         
         # Initialize calendar service
         calendar_service = GoogleCalendarService()
-        await calendar_service.initialize_service()
+        await calendar_service.authenticate()
         
         # Initialize gmail service
         gmail_service = GoogleGmailService()
-        await gmail_service.initialize_service()
+        await gmail_service.authenticate()
         
         # Get the Google Maps API key from environment variables
         maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
@@ -53,19 +54,19 @@ async def initialize_services():
         
         # Initialize fitness service
         fitness_service = GoogleFitnessService()
-        await fitness_service.initialize_service()
+        await fitness_service.authenticate()
         
         # Initialize tasks service
         tasks_service = GoogleTasksService()
-        await tasks_service.initialize_service()
+        await tasks_service.authenticate()
         
         # Initialize drive service
         drive_service = GoogleDriveService()
-        await drive_service.initialize_service()
+        await drive_service.authenticate()
         
         # Initialize sheets service
         sheets_service = GoogleSheetsService()
-        await sheets_service.initialize_service()
+        await sheets_service.authenticate()
         
         logger.info("All Google services initialized successfully")
     except Exception as e:
@@ -134,9 +135,22 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks, x_api_ke
 
         # Get the agent and process messages
         agent = await get_agent()
-        response = await agent.process_messages(normalized_messages)
+        responses = await agent.process_messages(normalized_messages)
         logger.info("Successfully processed messages")
-        return {"response": response}
+        
+        # Handle both single response (string) and multiple responses (list)
+        if isinstance(responses, list):
+            # Return multiple responses in a structured format
+            return {
+                "responses": responses,
+                "type": "multiple"
+            }
+        else:
+            # Backward compatibility for single response
+            return {
+                "response": responses,
+                "type": "single"
+            }
     except Exception as e:
         import traceback
         logger.error(f"Error in /chat endpoint: {str(e)}", exc_info=True)
@@ -219,4 +233,51 @@ async def shutdown(request: Request):
         return JSONResponse({"message": "Shutting down servers..."})
     except Exception as e:
         logger.error(f"Error during shutdown: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/chat/stream")
+async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks, x_api_key: Optional[str] = Header(None)):
+    try:
+        logger.info(f"Streaming chat endpoint called with {len(request.messages)} messages")
+        # Convert Pydantic Message objects to dicts
+        raw_messages = [msg.dict() if hasattr(msg, 'dict') else msg for msg in request.messages]
+        logger.debug(f"Raw incoming messages: {raw_messages}")
+        # Normalize messages
+        normalized_messages = []
+        for i, msg in enumerate(raw_messages):
+            if not isinstance(msg, dict):
+                logger.error(f"Message {i} is not a dict: {msg}")
+                continue
+            if 'role' not in msg or 'content' not in msg:
+                logger.error(f"Message {i} missing required fields: {msg}")
+                continue
+            role = msg['role']
+            content = msg['content']
+            if role not in {"user", "assistant", "system"}:
+                logger.error(f"Message {i} has invalid role: {role}")
+                continue
+            normalized = {"role": role, "content": content.strip()}
+            logger.debug(f"Successfully normalized message {i}: {msg} -> {normalized}")
+            normalized_messages.append(normalized)
+        logger.debug(f"Normalized messages to be processed: {normalized_messages}")
+
+        if not normalized_messages:
+            logger.error("No valid messages after normalization")
+            raise HTTPException(status_code=400, detail="No valid messages to process")
+
+        # Get the agent and process messages
+        agent = await get_agent()
+        async def stream_responses():
+            async for response in agent.process_messages_stream(normalized_messages):
+                yield f"data: {json.dumps({'response': response, 'type': 'single'})}\n\n"
+
+        return StreamingResponse(stream_responses(), media_type="text/event-stream")
+    except Exception as e:
+        import traceback
+        logger.error(f"Error in /chat/stream endpoint: {str(e)}", exc_info=True)
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        for handler in logger.handlers:
+            handler.flush()
+        with open("backend_error.log", "a") as f:
+            f.write("TOP-LEVEL ERROR:\n" + traceback.format_exc() + "\n")
         raise HTTPException(status_code=500, detail=str(e)) 

@@ -45,6 +45,15 @@ You have access to various tools to help manage the user's fitness journey:
 - Sheets: Track workout data and progress metrics
 - Maps: Find nearby gyms and workout locations
 
+IMPORTANT CALENDAR CONFLICT HANDLING:
+When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
+1. Present the conflicting events to the user
+2. Ask them how they'd like to proceed:
+   - "skip": Don't create the new event
+   - "replace": Delete all conflicting events and create the new one
+   - "delete": Delete the first conflicting event and create the new one
+3. Use the resolve_calendar_conflict tool with their choice
+
 Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""
 
 class FindNearbyWorkoutLocationsInput(BaseModel):
@@ -92,6 +101,11 @@ class PersonalTrainerAgent:
                 name="create_calendar_event",
                 func=self.calendar_service.write_event,
                 description="Create a new calendar event"
+            ),
+            Tool(
+                name="resolve_calendar_conflict",
+                func=self._resolve_calendar_conflict,
+                description="Resolve calendar conflicts by replacing, deleting, or skipping conflicting events"
             ),
             Tool(
                 name="send_email",
@@ -206,6 +220,15 @@ For example:
 - If they ask to create a workout: TOOL_CALL: create_calendar_event "Workout session at 6 PM tomorrow"
 - If they ask to send an email: TOOL_CALL: send_email "recipient@example.com|Subject|Message content"
 
+IMPORTANT CALENDAR CONFLICT HANDLING:
+When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
+1. Present the conflicting events to the user
+2. Ask them how they'd like to proceed:
+   - "skip": Don't create the new event
+   - "replace": Delete all conflicting events and create the new one
+   - "delete": Delete the first conflicting event and create the new one
+3. Use the resolve_calendar_conflict tool with their choice: TOOL_CALL: resolve_calendar_conflict '{{"event_details": {{...}}, "action": "skip"}}'
+
 If they don't need a tool, just respond normally with helpful, encouraging fitness advice.
 
 Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""
@@ -313,6 +336,9 @@ Always be professional, encouraging, and focused on helping the user achieve the
                 elif agent_action["type"] == "tool_call":
                     last_tool = agent_action["tool"]
                     print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
+                    # Send confirmation message before calling tool
+                    confirmation_message = self._get_tool_confirmation_message(last_tool, agent_action["args"])
+                    responses.append(confirmation_message)
                     state = "AGENT_TOOL_CALL"
                 else:
                     state = "DONE"
@@ -332,6 +358,9 @@ Always be professional, encouraging, and focused on helping the user achieve the
                     state = "DONE"
                 elif summary_action["type"] == "tool_call":
                     agent_action = summary_action
+                    # Send confirmation message before calling the next tool
+                    confirmation_message = self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
+                    responses.append(confirmation_message)
                     state = "AGENT_TOOL_CALL"
                 else:
                     # If agent does not summarize, provide a default summary based on the tool
@@ -358,9 +387,25 @@ Always be professional, encouraging, and focused on helping the user achieve the
             else:
                 responses.append(f"I've completed your request. Here's what I found: {tool_result}")
 
-        final_response = "\n\n".join(responses)
-        print(f"Final response: {final_response}")
-        return final_response
+        print(f"Final responses: {responses}")
+        return responses
+
+    def _get_tool_confirmation_message(self, tool_name: str, tool_args: str) -> str:
+        """Generate a user-friendly confirmation message before calling a tool."""
+        tool_messages = {
+            "get_calendar_events": "I'll check your calendar for upcoming events.",
+            "create_calendar_event": f"I'll schedule a workout for you: {tool_args}",
+            "resolve_calendar_conflict": "I'll resolve the calendar conflict as requested.",
+            "send_email": "I'll send that email for you.",
+            "create_task": f"I'll create a task for you: {tool_args}",
+            "get_tasks": "I'll check your tasks.",
+            "search_drive": f"I'll search your Drive for: {tool_args}",
+            "get_sheet_data": "I'll get that data from your spreadsheet.",
+            "get_directions": f"I'll get directions for you: {tool_args}",
+            "find_nearby_workout_locations": f"I'll find nearby workout locations: {tool_args}"
+        }
+        
+        return tool_messages.get(tool_name, f"I'll help you with that using {tool_name}.")
 
     async def process_messages(self, messages):
         """Process a list of messages and return a response."""
@@ -382,6 +427,98 @@ Always be professional, encouraging, and focused on helping the user achieve the
 
         # Use the new agent_conversation_loop for multi-step orchestration
         return await self.agent_conversation_loop(input_messages)
+
+    async def process_messages_stream(self, messages):
+        """Process a list of messages and yield responses as they become available."""
+        if not self.agent:
+            raise RuntimeError("Agent not initialized. Call async_init() first.")
+
+        # Convert messages to the format expected by the agent
+        input_messages = []
+        for msg in messages:
+            if isinstance(msg, dict):
+                if msg["role"] == "user":
+                    input_messages.append(HumanMessage(content=msg["content"]))
+                elif msg["role"] == "assistant":
+                    input_messages.append(AIMessage(content=msg["content"]))
+                elif msg["role"] == "system":
+                    input_messages.append(SystemMessage(content=msg["content"]))
+            else:
+                input_messages.append(msg)
+
+        # Use the new streaming agent_conversation_loop for real-time responses
+        async for response in self.agent_conversation_loop_stream(input_messages):
+            yield response
+
+    async def agent_conversation_loop_stream(self, user_input):
+        """Streaming version of the conversation loop that yields responses as they become available."""
+        state = "AGENT_THINKING"
+        history = [user_input]
+        agent_action = None
+        tool_result = None
+        last_tool = None
+
+        while state != "DONE":
+            print(f"Current state: {state}")
+            if state == "AGENT_THINKING":
+                agent_action = await self.decide_next_action(history)
+                print(f"Agent action: {agent_action}")
+                if agent_action["type"] == "message":
+                    yield agent_action["content"]
+                    state = "DONE"
+                elif agent_action["type"] == "tool_call":
+                    last_tool = agent_action["tool"]
+                    print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
+                    # Send confirmation message before calling tool
+                    confirmation_message = self._get_tool_confirmation_message(last_tool, agent_action["args"])
+                    yield confirmation_message
+                    state = "AGENT_TOOL_CALL"
+                else:
+                    state = "DONE"
+            elif state == "AGENT_TOOL_CALL":
+                tool_result = await self._execute_tool(agent_action["tool"], agent_action["args"])
+                print(f"Tool result for {last_tool}: {tool_result}")
+                # Add the tool result as a message in the history
+                history.append(AIMessage(content=f"TOOL RESULT: {tool_result}"))
+                # Always go to summarize state after a tool call
+                state = "AGENT_SUMMARIZE_TOOL_RESULT"
+            elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
+                # Require the agent to summarize the tool result for the user
+                summary_action = await self.decide_next_action(history)
+                print(f"Agent summary action: {summary_action}")
+                if summary_action["type"] == "message":
+                    yield summary_action["content"]
+                    state = "DONE"
+                elif summary_action["type"] == "tool_call":
+                    agent_action = summary_action
+                    # Send confirmation message before calling the next tool
+                    confirmation_message = self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
+                    yield confirmation_message
+                    state = "AGENT_TOOL_CALL"
+                else:
+                    # If agent does not summarize, provide a default summary based on the tool
+                    print(f"Using default summary for tool: {last_tool}")
+                    if last_tool == "create_calendar_event":
+                        yield "I've scheduled your workout. You'll receive a calendar invitation shortly."
+                    elif last_tool == "get_calendar_events":
+                        yield f"Here are your upcoming workouts: {tool_result}"
+                    elif last_tool == "get_directions":
+                        yield f"Here are the directions to your workout location: {tool_result}"
+                    else:
+                        yield f"I've completed your request. Here's what I found: {tool_result}"
+                    state = "DONE"
+
+        # Final fallback: if we have a tool_result and last_tool but no responses yielded
+        if tool_result and last_tool:
+            print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
+            if last_tool == "create_calendar_event":
+                yield "I've scheduled your workout. You'll receive a calendar invitation shortly."
+            elif last_tool == "get_calendar_events":
+                yield f"Here are your upcoming workouts: {tool_result}"
+            elif last_tool == "get_directions":
+                yield f"Here are the directions to your workout location: {tool_result}"
+            else:
+                yield f"I've completed your request. Here's what I found: {tool_result}"
 
     def _parse_tool_string(self, output_str):
         """Parse tool name and input from a raw tool invocation string."""
@@ -500,7 +637,14 @@ Example output:
                 event_details = json.loads(json_input)
                 # Convert ISO strings to Google Calendar format
                 event_details = self._convert_to_calendar_format(event_details)
-                return await self.calendar_service.write_event(event_details)
+                result = await self.calendar_service.write_event(event_details)
+                
+                # Check if there's a conflict
+                if isinstance(result, dict) and result.get("type") == "conflict":
+                    return f"CONFLICT_DETECTED: {result['message']}\nConflicting events:\n" + \
+                           "\n".join([f"- {event.get('summary', 'Untitled')} ({event.get('start', {}).get('dateTime', 'Unknown time')})" 
+                                     for event in result['conflicting_events']])
+                return result
             else:
                 # If it's already JSON, parse it into a dictionary
                 if isinstance(tool_input, str):
@@ -509,7 +653,14 @@ Example output:
                     event_details = tool_input
                 # Convert ISO strings to Google Calendar format
                 event_details = self._convert_to_calendar_format(event_details)
-                return await self.calendar_service.write_event(event_details)
+                result = await self.calendar_service.write_event(event_details)
+                
+                # Check if there's a conflict
+                if isinstance(result, dict) and result.get("type") == "conflict":
+                    return f"CONFLICT_DETECTED: {result['message']}\nConflicting events:\n" + \
+                           "\n".join([f"- {event.get('summary', 'Untitled')} ({event.get('start', {}).get('dateTime', 'Unknown time')})" 
+                                     for event in result['conflicting_events']])
+                return result
         elif tool_name == "send_email":
             return await self.gmail_service.send_message(tool_input)
         elif tool_name == "create_task":
@@ -530,6 +681,35 @@ Example output:
                 return await self.maps_service.find_nearby_workout_locations(tool_input)
             else:
                 return "Maps service not available"
+        elif tool_name == "resolve_calendar_conflict":
+            # Parse the conflict resolution request
+            try:
+                if isinstance(tool_input, str):
+                    conflict_data = json.loads(tool_input)
+                else:
+                    conflict_data = tool_input
+                
+                event_details = conflict_data.get("event_details")
+                conflict_action = conflict_data.get("action", "skip")  # skip, replace, or delete
+                
+                if not event_details:
+                    return "Error: Missing event_details in conflict resolution request"
+                
+                # Convert to proper format if needed
+                if isinstance(event_details, str):
+                    event_details = json.loads(event_details)
+                
+                event_details = self._convert_to_calendar_format(event_details)
+                result = await self.calendar_service.write_event_with_conflict_resolution(event_details, conflict_action)
+                
+                if isinstance(result, dict) and result.get("type") == "conflict":
+                    return f"Conflict still exists after resolution attempt: {result['message']}"
+                else:
+                    return f"Successfully created event with conflict resolution (action: {conflict_action})"
+                    
+            except Exception as e:
+                logger.error(f"Error resolving calendar conflict: {e}")
+                return f"Error resolving conflict: {str(e)}"
         return None
 
     def _create_tools(self):
@@ -737,3 +917,31 @@ Example output:
                     converted['end'] = {'dateTime': converted['end']}
         
         return converted
+
+    async def _resolve_calendar_conflict(self, conflict_data):
+        """Handle calendar conflict resolution."""
+        try:
+            if isinstance(conflict_data, str):
+                conflict_data = json.loads(conflict_data)
+            
+            event_details = conflict_data.get("event_details")
+            conflict_action = conflict_data.get("action", "skip")  # skip, replace, or delete
+            
+            if not event_details:
+                return "Error: Missing event_details in conflict resolution request"
+            
+            # Convert to proper format if needed
+            if isinstance(event_details, str):
+                event_details = json.loads(event_details)
+            
+            event_details = self._convert_to_calendar_format(event_details)
+            result = await self.calendar_service.write_event_with_conflict_resolution(event_details, conflict_action)
+            
+            if isinstance(result, dict) and result.get("type") == "conflict":
+                return f"Conflict still exists after resolution attempt: {result['message']}"
+            else:
+                return f"Successfully created event with conflict resolution (action: {conflict_action})"
+                
+        except Exception as e:
+            logger.error(f"Error resolving calendar conflict: {e}")
+            return f"Error resolving conflict: {str(e)}"

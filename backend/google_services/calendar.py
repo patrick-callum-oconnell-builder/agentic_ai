@@ -116,6 +116,56 @@ class GoogleCalendarService(GoogleServiceBase):
             print(f"Error parsing datetime: {e}")
             raise ValueError(f"Invalid datetime string: {dt_str}")
 
+    async def check_for_conflicts(self, event_details: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Check for conflicting events at the specified time.
+        Args:
+            event_details (Dict[str, Any]): Event details including start and end times
+        Returns:
+            List[Dict[str, Any]]: List of conflicting events (empty if no conflicts)
+        """
+        try:
+            start_time = event_details['start']['dateTime'] if isinstance(event_details['start'], dict) else event_details['start']
+            end_time = event_details['end']['dateTime'] if isinstance(event_details['end'], dict) else event_details['end']
+            
+            # Parse the times to ensure they're in the correct format
+            if isinstance(start_time, str):
+                start_dt = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+            else:
+                start_dt = start_time
+                
+            if isinstance(end_time, str):
+                end_dt = datetime.fromisoformat(end_time.replace('Z', '+00:00'))
+            else:
+                end_dt = end_time
+            
+            # Convert to UTC for API call
+            if start_dt.tzinfo is None:
+                start_dt = self.user_tz.localize(start_dt)
+            if end_dt.tzinfo is None:
+                end_dt = self.user_tz.localize(end_dt)
+            
+            start_utc = start_dt.astimezone(dt_timezone.utc).isoformat()
+            end_utc = end_dt.astimezone(dt_timezone.utc).isoformat()
+            
+            def fetch():
+                events_result = self.service.events().list(
+                    calendarId='primary',
+                    timeMin=start_utc,
+                    timeMax=end_utc,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                return events_result.get('items', [])
+            
+            conflicting_events = await asyncio.to_thread(fetch)
+            logger.info(f"Found {len(conflicting_events)} conflicting events")
+            return conflicting_events
+            
+        except Exception as e:
+            logger.error(f"Error checking for conflicts: {e}")
+            raise
+
     async def write_event(self, event_details: Dict[str, Any]) -> Dict[str, Any]:
         """
         Asynchronously create a new calendar event.
@@ -136,6 +186,22 @@ class GoogleCalendarService(GoogleServiceBase):
                         raise ValueError(f"Missing dateTime in {time_field}")
                 else:
                     raise ValueError(f"Invalid {time_field} format")
+            
+            # Check for conflicts before creating the event
+            conflicting_events = await self.check_for_conflicts(event_details)
+            
+            if conflicting_events:
+                # Return conflict information instead of creating the event
+                conflict_info = {
+                    "type": "conflict",
+                    "conflicting_events": conflicting_events,
+                    "proposed_event": event_details,
+                    "message": f"Found {len(conflicting_events)} conflicting event(s) at this time. Please review and decide how to proceed."
+                }
+                logger.info(f"Conflict detected: {conflict_info['message']}")
+                return conflict_info
+            
+            # No conflicts, proceed with creating the event
             event = await asyncio.to_thread(
                 lambda: self.service.events().insert(
                     calendarId='primary',
@@ -149,6 +215,52 @@ class GoogleCalendarService(GoogleServiceBase):
             raise
         except Exception as e:
             logger.error(f"Error creating event: {str(e)}")
+            raise
+
+    async def write_event_with_conflict_resolution(self, event_details: Dict[str, Any], conflict_action: str = "skip") -> Dict[str, Any]:
+        """
+        Create a new calendar event with conflict resolution.
+        Args:
+            event_details (Dict[str, Any]): Event details including summary, start, end, etc.
+            conflict_action (str): How to handle conflicts - "skip", "replace", or "delete"
+        Returns:
+            Dict[str, Any]: Created event details or conflict information
+        """
+        try:
+            # Check for conflicts first
+            conflicting_events = await self.check_for_conflicts(event_details)
+            
+            if conflicting_events:
+                if conflict_action == "skip":
+                    return {
+                        "type": "conflict",
+                        "conflicting_events": conflicting_events,
+                        "proposed_event": event_details,
+                        "message": f"Found {len(conflicting_events)} conflicting event(s). Skipping event creation."
+                    }
+                elif conflict_action == "replace":
+                    # Delete all conflicting events
+                    for event in conflicting_events:
+                        await self.delete_event(event['id'])
+                    logger.info(f"Deleted {len(conflicting_events)} conflicting events")
+                elif conflict_action == "delete":
+                    # Delete the first conflicting event only
+                    if conflicting_events:
+                        await self.delete_event(conflicting_events[0]['id'])
+                        logger.info(f"Deleted conflicting event: {conflicting_events[0]['summary']}")
+            
+            # Now create the new event
+            event = await asyncio.to_thread(
+                lambda: self.service.events().insert(
+                    calendarId='primary',
+                    body=event_details
+                ).execute()
+            )
+            logger.info(f"Successfully created event: {event.get('id')}")
+            return event
+            
+        except Exception as e:
+            logger.error(f"Error creating event with conflict resolution: {str(e)}")
             raise
 
     async def delete_event(self, event_id: str) -> None:

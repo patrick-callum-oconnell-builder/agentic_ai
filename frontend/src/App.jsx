@@ -89,8 +89,10 @@ function App() {
     setIsThinking(false);
 
     try {
-        log.debug('Making API request to /api/chat');
-        const response = await fetch('http://localhost:8000/api/chat', {
+        log.debug('Making streaming API request to /api/chat/stream');
+        
+        // Use streaming endpoint for real-time responses
+        const response = await fetch('http://localhost:8000/api/chat/stream', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -107,39 +109,40 @@ function App() {
             throw new Error(`HTTP error! status: ${response.status}`);
         }
 
-        const data = await response.json();
-        log.info('Received response:', data);
+        // Handle Server-Sent Events
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
         
-        // Split assistant messages if there are multiple (intent + outcome)
-        let assistantMessages = [];
-        if (data.response.includes('[TOOL RESULT]:')) {
-          // If backend includes tool result as a message, split on it
-          const [intent, ...rest] = data.response.split('[TOOL RESULT]:');
-          if (intent.trim()) {
-            assistantMessages.push({ role: 'assistant', content: intent.trim() });
-          }
-          if (rest.length > 0) {
-            // The next message(s) are the tool result and follow-up
-            const toolResultAndFollowup = rest.join('[TOOL RESULT]:').split('\n').filter(Boolean);
-            if (toolResultAndFollowup.length > 0) {
-              // Show thinking animation before the follow-up
-              setIsThinking(true);
-              // Add the tool result as a hidden message (not shown to user)
-              // Add the follow-up as the next assistant message
-              setTimeout(() => {
-                setMessages(prev => [...prev, { role: 'assistant', content: toolResultAndFollowup.join('\n').trim() }]);
-                setIsThinking(false);
-                setIsLoading(false);
-              }, 1200); // Simulate thinking delay
-              return;
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (line.trim() && line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6)); // Remove 'data: ' prefix
+                        log.info('Received streaming response:', data);
+                        
+                        if (data.response) {
+                            // Add the response as a new assistant message
+                            setMessages(prev => [...prev, { 
+                                role: 'assistant', 
+                                content: data.response.trim() 
+                            }]);
+                        }
+                    } catch (parseError) {
+                        log.error('Error parsing SSE data:', parseError);
+                    }
+                }
             }
-          }
         }
-        // If not a tool result split, just add the message
-        setMessages(prev => [...prev, ...assistantMessages.length ? assistantMessages : [{ role: 'assistant', content: data.response.trim() }]]);
+        
         setIsThinking(false);
     } catch (error) {
-        log.error('Error in chat request:', error);
+        log.error('Error in streaming chat request:', error);
         setMessages(prev => [...prev, { 
             role: 'assistant', 
             content: 'Sorry, I encountered an error. Please try again.' 
