@@ -337,7 +337,7 @@ Always be professional, encouraging, and focused on helping the user achieve the
                     last_tool = agent_action["tool"]
                     print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
                     # Send confirmation message before calling tool
-                    confirmation_message = self._get_tool_confirmation_message(last_tool, agent_action["args"])
+                    confirmation_message = await self._get_tool_confirmation_message(last_tool, agent_action["args"])
                     responses.append(confirmation_message)
                     state = "AGENT_TOOL_CALL"
                 else:
@@ -359,15 +359,13 @@ Always be professional, encouraging, and focused on helping the user achieve the
                 elif summary_action["type"] == "tool_call":
                     agent_action = summary_action
                     # Send confirmation message before calling the next tool
-                    confirmation_message = self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
+                    confirmation_message = await self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
                     responses.append(confirmation_message)
                     state = "AGENT_TOOL_CALL"
                 else:
                     # If agent does not summarize, provide a default summary based on the tool
                     print(f"Using default summary for tool: {last_tool}")
-                    if last_tool == "create_calendar_event":
-                        responses.append("I've scheduled your workout. You'll receive a calendar invitation shortly.")
-                    elif last_tool == "get_calendar_events":
+                    if last_tool == "get_calendar_events":
                         responses.append(f"Here are your upcoming workouts: {tool_result}")
                     elif last_tool == "get_directions":
                         responses.append(f"Here are the directions to your workout location: {tool_result}")
@@ -378,9 +376,7 @@ Always be professional, encouraging, and focused on helping the user achieve the
         # Final fallback: if responses is empty but we have a tool_result and last_tool, return the default summary
         if not responses and tool_result and last_tool:
             print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
-            if last_tool == "create_calendar_event":
-                responses.append("I've scheduled your workout. You'll receive a calendar invitation shortly.")
-            elif last_tool == "get_calendar_events":
+            if last_tool == "get_calendar_events":
                 responses.append(f"Here are your upcoming workouts: {tool_result}")
             elif last_tool == "get_directions":
                 responses.append(f"Here are the directions to your workout location: {tool_result}")
@@ -390,11 +386,27 @@ Always be professional, encouraging, and focused on helping the user achieve the
         print(f"Final responses: {responses}")
         return responses
 
-    def _get_tool_confirmation_message(self, tool_name: str, tool_args: str) -> str:
-        """Generate a user-friendly confirmation message before calling a tool."""
+    async def _get_tool_confirmation_message(self, tool_name: str, tool_args: str) -> str:
+        """Generate a user-friendly confirmation message before calling a tool. For create_calendar_event, use the LLM to make it natural."""
+        if tool_name == "create_calendar_event":
+            try:
+                prompt = f"""
+Rephrase the following workout event description into a natural, concise message indicating that you are processing the request, as if you are their personal trainer assistant. Example: 'I'll schedule your 10am workout session in your calendar for tomorrow.'
+
+Event description: {tool_args}
+
+Confirmation message:"""
+                messages = [
+                    SystemMessage(content="You are a helpful assistant that writes natural, concise messages indicating that you are processing a request. Never indicate that the action is already completed."),
+                    HumanMessage(content=prompt)
+                ]
+                response = await self.llm.ainvoke(messages)
+                return response.content.strip()
+            except Exception as e:
+                logger.error(f"LLM failed to generate confirmation message: {e}")
+                return f"I'll schedule your workout: {tool_args}"
         tool_messages = {
             "get_calendar_events": "I'll check your calendar for upcoming events.",
-            "create_calendar_event": f"I'll schedule a workout for you: {tool_args}",
             "resolve_calendar_conflict": "I'll resolve the calendar conflict as requested.",
             "send_email": "I'll send that email for you.",
             "create_task": f"I'll create a task for you: {tool_args}",
@@ -404,7 +416,6 @@ Always be professional, encouraging, and focused on helping the user achieve the
             "get_directions": f"I'll get directions for you: {tool_args}",
             "find_nearby_workout_locations": f"I'll find nearby workout locations: {tool_args}"
         }
-        
         return tool_messages.get(tool_name, f"I'll help you with that using {tool_name}.")
 
     async def process_messages(self, messages):
@@ -470,7 +481,7 @@ Always be professional, encouraging, and focused on helping the user achieve the
                     last_tool = agent_action["tool"]
                     print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
                     # Send confirmation message before calling tool
-                    confirmation_message = self._get_tool_confirmation_message(last_tool, agent_action["args"])
+                    confirmation_message = await self._get_tool_confirmation_message(last_tool, agent_action["args"])
                     yield confirmation_message
                     state = "AGENT_TOOL_CALL"
                 else:
@@ -492,15 +503,13 @@ Always be professional, encouraging, and focused on helping the user achieve the
                 elif summary_action["type"] == "tool_call":
                     agent_action = summary_action
                     # Send confirmation message before calling the next tool
-                    confirmation_message = self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
+                    confirmation_message = await self._get_tool_confirmation_message(agent_action["tool"], agent_action["args"])
                     yield confirmation_message
                     state = "AGENT_TOOL_CALL"
                 else:
                     # If agent does not summarize, provide a default summary based on the tool
                     print(f"Using default summary for tool: {last_tool}")
-                    if last_tool == "create_calendar_event":
-                        yield "I've scheduled your workout. You'll receive a calendar invitation shortly."
-                    elif last_tool == "get_calendar_events":
+                    if last_tool == "get_calendar_events":
                         yield f"Here are your upcoming workouts: {tool_result}"
                     elif last_tool == "get_directions":
                         yield f"Here are the directions to your workout location: {tool_result}"
@@ -511,9 +520,7 @@ Always be professional, encouraging, and focused on helping the user achieve the
         # Final fallback: if we have a tool_result and last_tool but no responses yielded
         if tool_result and last_tool:
             print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
-            if last_tool == "create_calendar_event":
-                yield "I've scheduled your workout. You'll receive a calendar invitation shortly."
-            elif last_tool == "get_calendar_events":
+            if last_tool == "get_calendar_events":
                 yield f"Here are your upcoming workouts: {tool_result}"
             elif last_tool == "get_directions":
                 yield f"Here are the directions to your workout location: {tool_result}"
