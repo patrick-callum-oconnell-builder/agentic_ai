@@ -107,55 +107,67 @@ class PersonalTrainerAgent:
         )
         
         # Initialize the tools
-        self.tools = [
-            Tool(
-                name="get_calendar_events",
-                func=self.calendar_service.get_upcoming_events,
-                description="Get upcoming calendar events"
-            ),
-            Tool(
-                name="create_calendar_event",
-                func=self.calendar_service.write_event,
-                description="Create a new calendar event"
-            ),
-            Tool(
-                name="resolve_calendar_conflict",
-                func=self._resolve_calendar_conflict,
-                description="Resolve calendar conflicts by replacing, deleting, or skipping conflicting events"
-            ),
-            Tool(
-                name="delete_events_in_range",
-                func=self.calendar_service.delete_events_in_range,
-                description="Delete all calendar events within a specified time range"
-            ),
-            Tool(
-                name="send_email",
-                func=self.gmail_service.send_message,
-                description="Send an email"
-            ),
-            Tool(
-                name="create_task",
-                func=self.tasks_service.create_task,
-                description="Create a new task"
-            ),
-            Tool(
-                name="get_tasks",
-                func=self.tasks_service.get_tasks,
-                description="Get tasks"
-            ),
-            Tool(
-                name="search_drive",
-                func=self.drive_service.list_files,
-                description="Search Google Drive files"
-            ),
-            Tool(
-                name="get_sheet_data",
-                func=self.sheets_service.get_sheet_data,
-                description="Get data from a Google Sheet"
+        self.tools = []
+        if self.calendar_service:
+            self.tools.extend([
+                Tool(
+                    name="get_calendar_events",
+                    func=self.calendar_service.get_upcoming_events,
+                    description="Get upcoming calendar events"
+                ),
+                Tool(
+                    name="create_calendar_event",
+                    func=self.calendar_service.write_event,
+                    description="Create a new calendar event"
+                ),
+                Tool(
+                    name="resolve_calendar_conflict",
+                    func=self._resolve_calendar_conflict,
+                    description="Resolve calendar conflicts by replacing, deleting, or skipping conflicting events"
+                ),
+                Tool(
+                    name="delete_events_in_range",
+                    func=self.calendar_service.delete_events_in_range,
+                    description="Delete all calendar events within a specified time range"
+                )
+            ])
+        if self.gmail_service:
+            self.tools.append(
+                Tool(
+                    name="send_email",
+                    func=self.gmail_service.send_message,
+                    description="Send an email"
+                )
             )
-        ]
-        
-        # Add maps tools only if maps_service is provided
+        if self.tasks_service:
+            self.tools.extend([
+                Tool(
+                    name="create_task",
+                    func=self.tasks_service.create_task,
+                    description="Create a new task"
+                ),
+                Tool(
+                    name="get_tasks",
+                    func=self.tasks_service.get_tasks,
+                    description="Get tasks"
+                )
+            ])
+        if self.drive_service:
+            self.tools.append(
+                Tool(
+                    name="search_drive",
+                    func=self.drive_service.list_files,
+                    description="Search Google Drive files"
+                )
+            )
+        if self.sheets_service:
+            self.tools.append(
+                Tool(
+                    name="get_sheet_data",
+                    func=self.sheets_service.get_sheet_data,
+                    description="Get data from a Google Sheet"
+                )
+            )
         if self.maps_service:
             self.tools.extend([
                 Tool(
@@ -683,63 +695,49 @@ Please provide a natural, detailed response:"""
 
     async def _convert_natural_language_to_calendar_json(self, natural_language_input: str) -> str:
         """Convert natural language input to JSON format for calendar events using LLM."""
-        try:
-            # Get current date/time information in Pacific Time
-            pacific_tz = timezone('America/Los_Angeles')
-            now = datetime.now(pacific_tz)
-            
-            # Create a simple prompt for the LLM
-            conversion_prompt = f"""Convert this natural language event description into a Google Calendar event JSON.
-Current time: {now.strftime('%Y-%m-%d %H:%M')} Pacific Time
-
-Input: "{natural_language_input}"
-
-Return a JSON object with these fields:
-- summary: Event title
-- start: Object with dateTime (ISO format with -07:00 timezone) and timeZone ("America/Los_Angeles")
-- end: Object with dateTime (ISO format with -07:00 timezone) and timeZone ("America/Los_Angeles")
-- description: Brief description (optional)
-- location: Event location (optional)
-
-Example:
-{{
-    "summary": "Workout Session",
-    "start": {{
-        "dateTime": "2024-03-20T18:00:00-07:00",
-        "timeZone": "America/Los_Angeles"
-    }},
-    "end": {{
-        "dateTime": "2024-03-20T19:00:00-07:00",
-        "timeZone": "America/Los_Angeles"
-    }},
-    "description": "General fitness workout",
-    "location": "Gym"
-}}
-
-Return ONLY the JSON object."""
-
-            # Use the LLM to convert the input
-            messages = [
-                SystemMessage(content="You are a helpful assistant that converts natural language to Google Calendar event JSON. Always return valid JSON only."),
-                HumanMessage(content=conversion_prompt)
-            ]
-            
-            response = await self.llm.ainvoke(messages)
-            json_string = response.content.strip()
-            
-            # Clean up the response to ensure it's valid JSON
-            json_string = json_string.replace('```json', '').replace('```', '').strip()
-            
-            # Validate that it's valid JSON
+        pacific_tz = pytz.timezone('America/Los_Angeles')
+        now = datetime.now(pacific_tz)
+        def build_prompt(input_text):
+            return f"""Convert this natural language event description into a Google Calendar event JSON.\nCurrent time: {now.strftime('%Y-%m-%d %H:%M')} Pacific Time\n\nInput: \"{input_text}\"\n\nRespond ONLY with a valid JSON object, no text or explanation, and never repeat the input. The JSON must have these fields:\n- summary: Event title\n- start: Object with dateTime (ISO format with -07:00 timezone) and timeZone (\"America/Los_Angeles\")\n- end: Object with dateTime (ISO format with -07:00 timezone) and timeZone (\"America/Los_Angeles\")\n- description: Brief description (optional)\n- location: Event location (optional)\n\nRules:\n1. If no time is specified, use 6:00 PM tomorrow\n2. If no duration is specified, make it 1 hour\n3. Always use Pacific Time (-07:00)\n4. For \"tomorrow\", use tomorrow's date\n5. For \"today\", use today's date\n6. For times like \"9 AM\", convert to 24-hour format (09:00)\n\nExample:\n{{\n    \"summary\": \"Workout Session\",\n    \"start\": {{\n        \"dateTime\": \"2024-03-20T18:00:00-07:00\",\n        \"timeZone\": \"America/Los_Angeles\"\n    }},\n    \"end\": {{\n        \"dateTime\": \"2024-03-20T19:00:00-07:00\",\n        \"timeZone\": \"America/Los_Angeles\"\n    }},\n    \"description\": \"General fitness workout\",\n    \"location\": \"Gym\"\n}}\n"""
+        last_json_string = None
+        for attempt in range(2):  # Try twice
             try:
-                json.loads(json_string)
-                return json_string
-            except json.JSONDecodeError:
-                raise ValueError("Could not parse LLM response into valid JSON")
-                    
-        except Exception as e:
-            logger.error(f"Error converting natural language to JSON: {e}")
-            raise
+                messages = [
+                    SystemMessage(content="You are a helpful assistant that converts natural language to Google Calendar event JSON. Always return valid JSON only. Never use hardcoded dates - always use relative dates based on the current date."),
+                    HumanMessage(content=build_prompt(natural_language_input))
+                ]
+                response = await self.llm.ainvoke(messages)
+                json_string = response.content.strip()
+                json_string = json_string.replace('```json', '').replace('```', '').strip()
+                last_json_string = json_string
+                event_data = json.loads(json_string)
+                # Ensure start and end are properly formatted
+                for time_field in ['start', 'end']:
+                    if time_field in event_data:
+                        if isinstance(event_data[time_field], str):
+                            dt = dateparser.parse(event_data[time_field], settings={'PREFER_DATES_FROM': 'future'})
+                            if dt:
+                                if dt.tzinfo is None:
+                                    dt = pacific_tz.localize(dt)
+                                event_data[time_field] = {
+                                    'dateTime': dt.isoformat(),
+                                    'timeZone': 'America/Los_Angeles'
+                                }
+                        elif isinstance(event_data[time_field], dict):
+                            if 'dateTime' in event_data[time_field]:
+                                dt = dateparser.parse(event_data[time_field]['dateTime'], settings={'PREFER_DATES_FROM': 'future'})
+                                if dt:
+                                    if dt.tzinfo is None:
+                                        dt = pacific_tz.localize(dt)
+                                    event_data[time_field]['dateTime'] = dt.isoformat()
+                                    event_data[time_field]['timeZone'] = 'America/Los_Angeles'
+                return json.dumps(event_data)
+            except Exception as e:
+                logger.error(f"Attempt {attempt+1}: Error converting natural language to JSON: {e}. LLM output: {last_json_string}")
+                if attempt == 0:
+                    continue
+                else:
+                    raise ValueError(f"LLM did not return valid JSON for event. LLM output: {last_json_string}")
 
     async def _execute_tool(self, tool_name: str, args: Union[str, Dict[str, Any]]) -> Any:
         """Execute a tool and return its result."""
@@ -753,58 +751,35 @@ Return ONLY the JSON object."""
             if isinstance(args, str):
                 # Special handling for delete_events_in_range
                 if tool_name == "delete_events_in_range":
-                    try:
-                        # Check if it's already in ISO format with a separator
-                        if '|' in args or ',' in args:
-                            # Keep the format as is - the calendar service can handle both separators
-                            args = {"time_range": args.strip('"')}
-                        else:
-                            # Try to parse as a date range
-                            start_date = dateparser.parse(args.strip('"'), settings={'PREFER_DATES_FROM': 'future'})
-                            if start_date:
-                                # Set start time to beginning of day
-                                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                                # Set end time to end of day
-                                end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                                # Convert to ISO format with timezone
-                                pacific_tz = timezone('America/Los_Angeles')
-                                if start_date.tzinfo is None:
-                                    start_date = pacific_tz.localize(start_date)
-                                if end_date.tzinfo is None:
-                                    end_date = pacific_tz.localize(end_date)
-                                start_iso = start_date.isoformat()
-                                end_iso = end_date.isoformat()
-                                args = {"time_range": f"{start_iso},{end_iso}"}
-                            else:
-                                raise ValueError(f"Could not parse date range: {args}")
-                    except Exception as e:
-                        logger.error(f"Error parsing time range: {e}")
-                        raise ValueError(f"Invalid time range format: {args}")
+                    # Parse pipe-separated format: start_time|end_time
+                    parts = args.strip('"').split("|")
+                    if len(parts) >= 2:
+                        args = {
+                            "start_time": parts[0],
+                            "end_time": parts[1]
+                        }
+                    else:
+                        raise ValueError(f"Invalid time range format. Expected 'start_time|end_time', got: {args}")
+                
                 # Special handling for create_calendar_event
                 elif tool_name == "create_calendar_event":
                     try:
-                        # Remove any surrounding quotes from the input
                         input_text = args.strip('"')
-                        
                         # Convert natural language to calendar event JSON
                         json_string = await self._convert_natural_language_to_calendar_json(input_text)
-                        
                         try:
                             # Parse the JSON string
                             args = json.loads(json_string)
                         except json.JSONDecodeError as e:
                             logger.error(f"Error parsing calendar event JSON: {e}")
                             raise ValueError(f"Invalid calendar event JSON format: {json_string}")
-                        
                         # Validate the required fields
                         if not isinstance(args, dict):
                             raise ValueError("Invalid calendar event format: not a dictionary")
-                        
                         required_fields = ['summary', 'start', 'end']
                         missing_fields = [field for field in required_fields if field not in args]
                         if missing_fields:
                             raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
-                        
                         # Ensure start and end are properly formatted
                         for time_field in ['start', 'end']:
                             if not isinstance(args[time_field], dict):
@@ -813,10 +788,11 @@ Return ONLY the JSON object."""
                                 raise ValueError(f"Missing dateTime in {time_field}")
                             if 'timeZone' not in args[time_field]:
                                 args[time_field]['timeZone'] = 'America/Los_Angeles'
-                        
                     except Exception as e:
                         logger.error(f"Error processing calendar event: {e}")
-                        raise ValueError(f"Invalid calendar event format: {input_text}")
+                        # Propagate the error message from _convert_natural_language_to_calendar_json
+                        raise ValueError(str(e))
+                
                 # Special handling for send_email
                 elif tool_name == "send_email":
                     # Parse pipe-separated format: recipient|subject|body
