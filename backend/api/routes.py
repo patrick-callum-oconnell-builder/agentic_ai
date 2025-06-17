@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from pydantic import validator
 import asyncio
 import json
+from backend.knowledge_graph import KnowledgeGraph, KNOWLEDGE_GRAPH_PROMPT
 
 # Configure logger
 logger = logging.getLogger(__name__)
@@ -280,4 +281,10 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks, x
             handler.flush()
         with open("backend_error.log", "a") as f:
             f.write("TOP-LEVEL ERROR:\n" + traceback.format_exc() + "\n")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/knowledge-graph")
+def get_knowledge_graph():
+    kg = KnowledgeGraph()
+    kg.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
+    return kg.to_dict() 

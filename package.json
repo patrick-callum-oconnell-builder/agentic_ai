@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "react-force-graph-2d": "^1.27.1",
     "remark-gfm": "^4.0.1"
   }
 }

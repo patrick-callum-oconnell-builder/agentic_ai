@@ -1,13 +1,11 @@
 import React, { useState } from 'react';
 import Chat from './components/Chat';
+import KnowledgeGraph from './components/KnowledgeGraph';
 import './App.css';
 
 const KnowledgeGraphTab: React.FC = () => (
   <div className="kg-graph-area">
-    {/* The entire area is now dedicated to the knowledge graph visualization */}
-    <div className="kg-placeholder">
-      Knowledge Graph Visualization Area
-    </div>
+    <KnowledgeGraph />
   </div>
 );
 
