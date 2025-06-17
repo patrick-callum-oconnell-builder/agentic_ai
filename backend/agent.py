@@ -26,12 +26,10 @@ from langchain.agents import ZeroShotAgent
 from langchain.chains import LLMChain
 import pytz
 import dateparser
+from datetime import timezone as dt_timezone
 
 load_dotenv()
 logger = logging.getLogger(__name__)
-
-# Global conversation history (ephemeral, lost on restart)
-GLOBAL_CONVERSATION_HISTORY = []
 
 # Define the system prompt for the agent
 SYSTEM_PROMPT = """You are a personal trainer AI assistant. Your goal is to help users achieve their fitness goals by:
@@ -48,6 +46,20 @@ You have access to various tools to help manage the user's fitness journey:
 - Drive: Store and organize workout plans and progress reports
 - Sheets: Track workout data and progress metrics
 - Maps: Find nearby gyms and workout locations
+
+IMPORTANT CONVERSATION CONTEXT HANDLING:
+1. Only use conversation history when:
+   - The user explicitly refers to a previous conversation (e.g., "that workout we discussed")
+   - The user uses pronouns like "it" or "that" that clearly refer to a previous topic
+   - The user asks to modify or change something previously discussed
+2. Treat as a new request when:
+   - The user makes a direct request without referring to previous context
+   - The user asks about a new topic or activity
+   - The user's request is self-contained and doesn't need previous context
+3. When a user confirms a specific time for a workout, ALWAYS use that exact time
+4. Never override a previously confirmed time with a different time
+5. If a user asks to change a time, only then should you propose a different time
+6. If a user asks about a workout without specifying details and it's a new request, ask for the details rather than assuming previous context
 
 IMPORTANT CALENDAR CONFLICT HANDLING:
 When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
@@ -237,11 +249,22 @@ For example:
 - If they ask to delete events in a time range: TOOL_CALL: delete_events_in_range "2024-03-20T00:00:00Z|2024-03-21T00:00:00Z"
   Note: The time range should be in ISO format with UTC timezone (Z suffix), separated by a pipe character (|)
 
-CRITICAL INSTRUCTION:
-- ALWAYS prioritize the user's most recent message and ignore any conflicting older messages.
-- The most recent message in the conversation history is the ONLY message that matters for determining the user's current request.
-- Older messages should only be used for context if they don't conflict with the current request.
-- If the most recent message asks for something different from previous messages, completely ignore the previous messages.
+CRITICAL INSTRUCTION FOR HANDLING CONVERSATION CONTEXT:
+1. Only use conversation history when:
+   - The user explicitly refers to a previous conversation (e.g., "that workout we discussed")
+   - The user uses pronouns like "it" or "that" that clearly refer to a previous topic
+   - The user asks to modify or change something previously discussed
+
+2. Treat as a new request when:
+   - The user makes a direct request without referring to previous context
+   - The user asks about a new topic or activity
+   - The user's request is self-contained and doesn't need previous context
+
+3. Calendar event rules:
+   - When a user confirms a specific time for a workout, ALWAYS use that exact time
+   - Never override a previously confirmed time with a different time
+   - If a user asks to change a time, only then should you propose a different time
+   - If a user asks about a workout without specifying details and it's a new request, ask for the details rather than assuming previous context
 
 IMPORTANT CALENDAR CONFLICT HANDLING:
 When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
@@ -250,38 +273,43 @@ When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
    - "skip": Don't create the new event
    - "replace": Delete all conflicting events and create the new one
    - "delete": Delete the first conflicting event and create the new one
-3. Use the resolve_calendar_conflict tool with their choice: TOOL_CALL: resolve_calendar_conflict '{"event_details": {...}, "action": "skip"}'
+3. Use the resolve_calendar_conflict tool with their choice
 
 If they don't need a tool, just respond normally with helpful, encouraging fitness advice.
 
 Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""
-            
-            # Prepare the messages for the LLM
-            messages = [SystemMessage(content=system_prompt)]
-            
-            # Add chat history
-            for msg in chat_history:
-                messages.append(HumanMessage(content=msg))
-            
-            # Add the current message
-            messages.append(HumanMessage(content=input_text))
 
-            print(f"Agent input: {input_text}")
-            response = await self.agent.ainvoke(messages)
-            print(f"Agent response type: {type(response)}")
-            print(f"Agent response: {response}")
+            # Create the prompt with the full conversation history
+            prompt = f"{system_prompt}\n\nConversation history:\n"
+            for msg in chat_history:
+                prompt += f"{msg}\n"
+            prompt += f"\nUser's latest message: {input_text}\n\nWhat should I do next?"
+
+            # Get the LLM's response
+            response = await self.llm.ainvoke(prompt)
+            
+            # Handle both string and AIMessage responses
+            if isinstance(response, str):
+                response_text = response
+            elif hasattr(response, 'content'):
+                response_text = response.content
+            else:
+                response_text = str(response)
+            
+            if not response_text or not response_text.strip():
+                logger.error(f"LLM returned empty response for input: {input_text}")
+                raise RuntimeError("LLM returned empty response.")
+            
+            response_text = response_text.strip()
             
             # Check if the response contains a tool call
-            response_content = response.content if hasattr(response, 'content') else str(response)
-            
-            if "TOOL_CALL:" in response_content:
+            if "TOOL_CALL:" in response_text:
                 # Parse the tool call
-                tool_call_line = response_content.split("TOOL_CALL:")[1].strip().split("\n")[0]
+                tool_call_line = response_text.split("TOOL_CALL:")[1].strip().split("\n")[0]
                 parts = tool_call_line.split(" ", 1)
                 if len(parts) >= 2:
                     tool_name = parts[0].strip()
                     tool_args = parts[1].strip()
-                    
                     return {
                         "type": "tool_call",
                         "tool": tool_name,
@@ -291,16 +319,12 @@ Always be professional, encouraging, and focused on helping the user achieve the
             # Handle regular messages
             return {
                 "type": "message",
-                "content": response_content
+                "content": response_text
             }
+                
         except Exception as e:
-            print(f"Error in decide_next_action: {e}")
-            import traceback
-            traceback.print_exc()
-            return {
-                "type": "message",
-                "content": "I apologize, but I encountered an error. Please try again."
-            }
+            logger.error(f"Error deciding next action: {e}")
+            raise
 
     async def process_tool_result(self, history):
         """Process the tool result and decide the next action."""
@@ -340,48 +364,134 @@ Always be professional, encouraging, and focused on helping the user achieve the
         }
 
     async def _summarize_tool_result(self, tool_name: str, tool_result: Any) -> str:
-        """Summarize a tool result using the LLM."""
+        """Summarize a tool result in a user-friendly way."""
         try:
-            # Create a prompt for the LLM to summarize the tool result
-            prompt = f"""You are a helpful personal trainer AI assistant. Summarize the result of the {tool_name} tool in a user-friendly way.
+            if tool_name == "delete_events_in_range":
+                # For calendar deletions, provide detailed information about what was deleted
+                if isinstance(tool_result, dict):
+                    count = tool_result.get('count', 0)
+                    events = tool_result.get('events', [])
+                    
+                    if count == 0:
+                        return "I didn't find any events to delete in that time period."
+                    
+                    # Build a detailed response
+                    response = f"I've deleted {count} event{'s' if count != 1 else ''} from your calendar:\n\n"
+                    for event in events:
+                        summary = event.get('summary', 'Untitled event')
+                        start = event.get('start', '')
+                        location = event.get('location', '')
+                        
+                        # Try to format the date nicely
+                        try:
+                            if start:
+                                start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                formatted_time = start_dt.strftime('%I:%M %p on %B %d, %Y')
+                                event_str = f"- {summary} at {formatted_time}"
+                            else:
+                                event_str = f"- {summary}"
+                        except:
+                            event_str = f"- {summary}"
+                        
+                        # Add location if available
+                        if location:
+                            event_str += f" ({location})"
+                        
+                        response += event_str + "\n"
+                    
+                    return response
+                else:
+                    # Fallback for old format or errors
+                    if isinstance(tool_result, int):
+                        if tool_result == 0:
+                            return "I didn't find any events to delete in that time period."
+                        elif tool_result == 1:
+                            return "I've deleted 1 event from your calendar."
+                        else:
+                            return f"I've deleted {tool_result} events from your calendar."
+                    return "I've cleared those events from your calendar."
 
-Tool result: {json.dumps(tool_result, default=str)}
+            # For calendar event creation
+            if tool_name == "create_calendar_event":
+                if isinstance(tool_result, dict):
+                    if tool_result.get("type") == "conflict":
+                        conflicting_events = tool_result.get("conflicting_events", [])
+                        conflict_msg = f"I found {len(conflicting_events)} conflicting event(s) at this time:\n\n"
+                        for event in conflicting_events:
+                            start = event['start'].get('dateTime', event['start'].get('date'))
+                            summary = event.get('summary', 'Untitled event')
+                            conflict_msg += f"- {summary} at {start}\n"
+                        conflict_msg += "\nHow would you like to proceed?\n"
+                        conflict_msg += "1. Skip: Don't create the new event\n"
+                        conflict_msg += "2. Replace: Delete all conflicting events and create the new one\n"
+                        conflict_msg += "3. Delete: Delete the first conflicting event and create the new one"
+                        return conflict_msg
+                    else:
+                        # Successfully created event
+                        event_id = tool_result.get('id')
+                        summary = tool_result.get('summary', 'event')
+                        start = tool_result.get('start', {}).get('dateTime', '')
+                        
+                        # Get the HTML link from the event response
+                        html_link = tool_result.get('htmlLink', '')
+                        if not html_link and event_id:
+                            # If no htmlLink is provided, construct it using the event ID
+                            import base64
+                            # The event ID needs to be base64-encoded for the URL
+                            encoded_id = base64.b64encode(event_id.encode()).decode()
+                            html_link = f"https://www.google.com/calendar/event?eid={encoded_id}"
+                        
+                        if start:
+                            try:
+                                start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                formatted_time = start_dt.strftime('%I:%M %p on %B %d, %Y')
+                                return f"Perfect! I've scheduled your {summary} for {formatted_time}. 📅 [View in Calendar]({html_link})"
+                            except:
+                                return f"Great! I've added the {summary} to your calendar. 📅 [View in Calendar]({html_link})"
+                        else:
+                            return f"Great! I've added the {summary} to your calendar. 📅 [View in Calendar]({html_link})"
 
-Guidelines:
-1. Be concise but informative
-2. Use natural, conversational language
-3. Format any dates, times, or numbers in a readable way
-4. If there are any errors or issues, explain them clearly
-5. If the result is a list or complex data, summarize the key points
-6. Use markdown formatting for better readability
-7. For calendar events, ALWAYS include:
-   - Event title
-   - Date and time in a readable format
-   - A clickable link to the event using markdown [Event Link](url)
-   - Any other relevant details
-8. If there are any links or references, make them clickable using markdown
+            # For email sending
+            if tool_name == "send_email":
+                return "I've sent the email for you."
 
-Return ONLY the summary, no additional text or explanation."""
+            # For task creation
+            if tool_name == "create_task":
+                if isinstance(tool_result, dict):
+                    task_title = tool_result.get('title', 'task')
+                    return f"I've created the task '{task_title}' for you."
 
-            # Get the LLM's response
-            response = await self.llm.ainvoke(prompt)
-            
-            # Handle both string and AIMessage responses
-            if isinstance(response, str):
-                response_text = response
-            elif hasattr(response, 'content'):
-                response_text = response.content
-            else:
-                response_text = str(response)
-            
-            if response_text and response_text.strip():
-                return response_text.strip()
-            else:
-                logger.error(f"LLM returned empty response for tool {tool_name} and result {tool_result}")
-                raise RuntimeError("LLM returned empty response.")
+            # For getting tasks
+            if tool_name == "get_tasks":
+                if isinstance(tool_result, list):
+                    if not tool_result:
+                        return "You don't have any tasks at the moment."
+                    task_list = "\n".join([f"- {task.get('title', 'Untitled task')}" for task in tool_result])
+                    return f"Here are your tasks:\n{task_list}"
+
+            # For calendar event queries
+            if tool_name == "get_calendar_events":
+                if isinstance(tool_result, list):
+                    if not tool_result:
+                        return "You don't have any upcoming events scheduled."
+                    event_list = []
+                    for event in tool_result:
+                        start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', ''))
+                        if start:
+                            try:
+                                start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                                formatted_time = start_dt.strftime('%I:%M %p on %B %d')
+                                event_list.append(f"- {event.get('summary', 'Untitled event')} at {formatted_time}")
+                            except:
+                                event_list.append(f"- {event.get('summary', 'Untitled event')} at {start}")
+                    return "Here are your upcoming events:\n" + "\n".join(event_list)
+
+            # Default response if no specific formatting is defined
+            return str(tool_result)
+
         except Exception as e:
-            logger.error(f"Error summarizing tool result with LLM for tool {tool_name}: {e}")
-            raise
+            logger.error(f"Error summarizing tool result: {e}")
+            return str(tool_result)
 
     async def agent_conversation_loop(self, user_input):
         """Loop-based orchestration to support multi-step agent actions with enforced tool result summarization."""
@@ -429,24 +539,30 @@ Return ONLY the summary, no additional text or explanation."""
         return responses
 
     async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
-        """Get a user-friendly confirmation message for a tool call."""
+        """Get a confirmation message for a tool call."""
         try:
-            # Create a prompt that encourages detailed, natural responses
             prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
 
 Tool arguments: {args}
 
 Please provide a natural, conversational response that:
-1. Confirms what you're about to do
-2. Includes relevant details from the request
-3. For calendar events, mention the event title, time, and that you'll provide a link
-4. For emails, mention the recipient and subject
-5. For tasks, mention the task name and due date
-6. For location searches, mention the location and what you're looking for
-7. Avoid using technical terms or mentioning the tool name
-8. Be encouraging and helpful
-9. NEVER use generic responses like "I'll add that to your calendar" or "Your workout has been scheduled"
-10. Always include specific details from the request
+1. For calendar deletions:
+   - Be brief and direct
+   - Just confirm what time period you'll be clearing
+   - Don't ask for confirmation
+   - Example: "I'll clear your calendar for March 20th."
+2. For calendar events:
+   - Mention the event title, time, and that you'll provide a link
+3. For emails:
+   - Mention the recipient and subject
+4. For tasks:
+   - Mention the task name and due date
+5. For location searches:
+   - Mention the location and what you're looking for
+6. Avoid using technical terms or mentioning the tool name
+7. Be encouraging and helpful
+8. NEVER use generic responses like "I'll add that to your calendar" or "Your workout has been scheduled"
+9. Always include specific details from the request
 
 Example responses:
 - "I'll schedule your Upper Body Workout for tomorrow at 10 AM, focusing on chest and shoulders. Once it's set up, I'll share a link so you can view all the details in your calendar."
@@ -464,35 +580,26 @@ Please provide a natural, detailed response:"""
             raise
 
     async def process_messages(self, messages):
-        """Process a list of messages and return a response. Uses global conversation history for context, returns only the latest response as a string."""
+        """Process a list of messages and return a response."""
         if not self.agent:
             raise RuntimeError("Agent not initialized. Call async_init() first.")
 
-        # Append new messages to the global conversation history with timestamps
+        # Convert messages to LangChain format
+        input_messages = []
         for msg in messages:
             if isinstance(msg, dict):
-                msg = msg.copy()
-                msg["timestamp"] = datetime.utcnow().isoformat() + "Z"
-            GLOBAL_CONVERSATION_HISTORY.append(msg)
-
-        # Use the full conversation history for context
-        input_messages = []
-        for msg in GLOBAL_CONVERSATION_HISTORY:
-            if isinstance(msg, dict):
-                timestamp = msg.get("timestamp", "")
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
-                content_with_time = f"[{timestamp}] {content}" if timestamp else content
                 if role == "user":
-                    input_messages.append(HumanMessage(content=content_with_time))
+                    input_messages.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    input_messages.append(AIMessage(content=content_with_time))
+                    input_messages.append(AIMessage(content=content))
                 elif role == "system":
-                    input_messages.append(SystemMessage(content=content_with_time))
+                    input_messages.append(SystemMessage(content=content))
             else:
                 input_messages.append(msg)
 
-        # Use the new agent_conversation_loop for multi-step orchestration
+        # Use the agent_conversation_loop for multi-step orchestration
         responses = await self.agent_conversation_loop(input_messages)
         # Always return only the latest response as a string
         if isinstance(responses, list):
@@ -500,35 +607,26 @@ Please provide a natural, detailed response:"""
         return responses
 
     async def process_messages_stream(self, messages):
-        """Process a list of messages and yield responses as they become available. Uses global conversation history for context."""
+        """Process a list of messages and yield responses as they become available."""
         if not self.agent:
             raise RuntimeError("Agent not initialized. Call async_init() first.")
 
-        # Append new messages to the global conversation history with timestamps
+        # Convert messages to LangChain format
+        input_messages = []
         for msg in messages:
             if isinstance(msg, dict):
-                msg = msg.copy()
-                msg["timestamp"] = datetime.utcnow().isoformat() + "Z"
-            GLOBAL_CONVERSATION_HISTORY.append(msg)
-
-        # Use the full conversation history for context
-        input_messages = []
-        for msg in GLOBAL_CONVERSATION_HISTORY:
-            if isinstance(msg, dict):
-                timestamp = msg.get("timestamp", "")
                 role = msg.get("role", "user")
                 content = msg.get("content", "")
-                content_with_time = f"[{timestamp}] {content}" if timestamp else content
                 if role == "user":
-                    input_messages.append(HumanMessage(content=content_with_time))
+                    input_messages.append(HumanMessage(content=content))
                 elif role == "assistant":
-                    input_messages.append(AIMessage(content=content_with_time))
+                    input_messages.append(AIMessage(content=content))
                 elif role == "system":
-                    input_messages.append(SystemMessage(content=content_with_time))
+                    input_messages.append(SystemMessage(content=content))
             else:
                 input_messages.append(msg)
 
-        # Use the new streaming agent_conversation_loop for real-time responses
+        # Use the streaming agent_conversation_loop for real-time responses
         async for response in self.agent_conversation_loop_stream(input_messages):
             yield response
 
@@ -586,89 +684,75 @@ Please provide a natural, detailed response:"""
     async def _convert_natural_language_to_calendar_json(self, natural_language_input: str) -> str:
         """Convert natural language input to JSON format for calendar events using LLM."""
         try:
-            # Get current date/time information
-            now = datetime.now()
-            current_year = now.year
-            current_month = now.month
-            current_day = now.day
-            tomorrow = now + timedelta(days=1)
-            tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+            # Get current date/time information in Pacific Time
+            pacific_tz = timezone('America/Los_Angeles')
+            now = datetime.now(pacific_tz)
             
-            # Create a prompt to convert natural language to JSON
-            conversion_prompt = f"""Convert the following natural language description into a JSON object for creating a calendar event.
+            # Create a simple prompt for the LLM
+            conversion_prompt = f"""Convert this natural language event description into a Google Calendar event JSON.
+Current time: {now.strftime('%Y-%m-%d %H:%M')} Pacific Time
 
-Natural language input: "{natural_language_input}"
+Input: "{natural_language_input}"
 
-Current date context:
-- Today is {now.strftime('%Y-%m-%d')} ({now.strftime('%A')})
-- Tomorrow is {tomorrow_str} ({tomorrow.strftime('%A')})
-- Current time is {now.strftime('%H:%M')}
+Return a JSON object with these fields:
+- summary: Event title
+- start: Object with dateTime (ISO format with -07:00 timezone) and timeZone ("America/Los_Angeles")
+- end: Object with dateTime (ISO format with -07:00 timezone) and timeZone ("America/Los_Angeles")
+- description: Brief description (optional)
+- location: Event location (optional)
 
-Requirements:
-- summary: A short, descriptive title for the event
-- start: Start time in ISO format (YYYY-MM-DDTHH:MM:SS) - use current year ({current_year})
-- end: End time in ISO format (YYYY-MM-DDTHH:MM:SS) - typically 1 hour after start unless specified
-- description: A brief description of the event (optional)
-- location: Location of the event (optional)
+Example:
+{{
+    "summary": "Workout Session",
+    "start": {{
+        "dateTime": "2024-03-20T18:00:00-07:00",
+        "timeZone": "America/Los_Angeles"
+    }},
+    "end": {{
+        "dateTime": "2024-03-20T19:00:00-07:00",
+        "timeZone": "America/Los_Angeles"
+    }},
+    "description": "General fitness workout",
+    "location": "Gym"
+}}
 
-Rules:
-- If no specific time is mentioned, default to 6:00 PM tomorrow
-- If no duration is mentioned, default to 1 hour
-- Use tomorrow's date if "tomorrow" is mentioned
-- Use today's date if "today" is mentioned
-- For workout events, use appropriate fitness-related descriptions
-- Always use the current year ({current_year}) unless a specific year is mentioned
-- Use 24-hour format for times
-
-Return ONLY the JSON object, no additional text or explanation.
-
-Example output:
-{{"summary": "Workout Session", "start": "{tomorrow_str}T18:00:00", "end": "{tomorrow_str}T19:00:00", "description": "Fitness workout session", "location": "Gym"}}"""
+Return ONLY the JSON object."""
 
             # Use the LLM to convert the input
             messages = [
-                SystemMessage(content="You are a helpful assistant that converts natural language to JSON format for calendar events. Always return valid JSON only."),
+                SystemMessage(content="You are a helpful assistant that converts natural language to Google Calendar event JSON. Always return valid JSON only."),
                 HumanMessage(content=conversion_prompt)
             ]
             
             response = await self.llm.ainvoke(messages)
             json_string = response.content.strip()
             
-            # Validate that the response is valid JSON
+            # Clean up the response to ensure it's valid JSON
+            json_string = json_string.replace('```json', '').replace('```', '').strip()
+            
+            # Validate that it's valid JSON
             try:
                 json.loads(json_string)
                 return json_string
             except json.JSONDecodeError:
-                # If the response isn't valid JSON, try to extract JSON from it
-                import re
-                json_match = re.search(r'\{.*\}', json_string, re.DOTALL)
-                if json_match:
-                    extracted_json = json_match.group(0)
-                    json.loads(extracted_json)  # Validate
-                    return extracted_json
-                else:
-                    raise ValueError("LLM response is not valid JSON")
+                raise ValueError("Could not parse LLM response into valid JSON")
                     
         except Exception as e:
             logger.error(f"Error converting natural language to JSON: {e}")
-            # Return a fallback JSON with default values using actual current date
-            tomorrow = datetime.now() + timedelta(days=1)
-            tomorrow_str = tomorrow.strftime("%Y-%m-%d")
-            return json.dumps({
-                "summary": "Workout Session",
-                "start": f"{tomorrow_str}T18:00:00",
-                "end": f"{tomorrow_str}T19:00:00",
-                "description": "Fitness workout session",
-                "location": "Gym"
-            })
+            raise
 
     async def _execute_tool(self, tool_name: str, args: Union[str, Dict[str, Any]]) -> Any:
         """Execute a tool and return its result."""
         try:
-            # Normalize args to dictionary format
+            # Find the matching tool
+            tool = next((t for t in self.tools if t.name == tool_name), None)
+            if not tool:
+                raise ValueError(f"Unknown tool: {tool_name}")
+
+            # Convert string args to dict if needed
             if isinstance(args, str):
+                # Special handling for delete_events_in_range
                 if tool_name == "delete_events_in_range":
-                    # Parse the time range from natural language
                     try:
                         # Check if it's already in ISO format with a separator
                         if '|' in args or ',' in args:
@@ -682,7 +766,12 @@ Example output:
                                 start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
                                 # Set end time to end of day
                                 end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
-                                # Convert to ISO format
+                                # Convert to ISO format with timezone
+                                pacific_tz = timezone('America/Los_Angeles')
+                                if start_date.tzinfo is None:
+                                    start_date = pacific_tz.localize(start_date)
+                                if end_date.tzinfo is None:
+                                    end_date = pacific_tz.localize(end_date)
                                 start_iso = start_date.isoformat()
                                 end_iso = end_date.isoformat()
                                 args = {"time_range": f"{start_iso},{end_iso}"}
@@ -691,67 +780,77 @@ Example output:
                     except Exception as e:
                         logger.error(f"Error parsing time range: {e}")
                         raise ValueError(f"Invalid time range format: {args}")
-                elif tool_name == "delete_calendar_event":
-                    args = {"event_id": args.strip('"')}
+                # Special handling for create_calendar_event
+                elif tool_name == "create_calendar_event":
+                    try:
+                        # Remove any surrounding quotes from the input
+                        input_text = args.strip('"')
+                        
+                        # Convert natural language to calendar event JSON
+                        json_string = await self._convert_natural_language_to_calendar_json(input_text)
+                        
+                        try:
+                            # Parse the JSON string
+                            args = json.loads(json_string)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Error parsing calendar event JSON: {e}")
+                            raise ValueError(f"Invalid calendar event JSON format: {json_string}")
+                        
+                        # Validate the required fields
+                        if not isinstance(args, dict):
+                            raise ValueError("Invalid calendar event format: not a dictionary")
+                        
+                        required_fields = ['summary', 'start', 'end']
+                        missing_fields = [field for field in required_fields if field not in args]
+                        if missing_fields:
+                            raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
+                        
+                        # Ensure start and end are properly formatted
+                        for time_field in ['start', 'end']:
+                            if not isinstance(args[time_field], dict):
+                                raise ValueError(f"Invalid {time_field} format: not a dictionary")
+                            if 'dateTime' not in args[time_field]:
+                                raise ValueError(f"Missing dateTime in {time_field}")
+                            if 'timeZone' not in args[time_field]:
+                                args[time_field]['timeZone'] = 'America/Los_Angeles'
+                        
+                    except Exception as e:
+                        logger.error(f"Error processing calendar event: {e}")
+                        raise ValueError(f"Invalid calendar event format: {input_text}")
+                # Special handling for send_email
+                elif tool_name == "send_email":
+                    # Parse pipe-separated format: recipient|subject|body
+                    parts = args.strip('"').split("|")
+                    if len(parts) >= 3:
+                        args = {
+                            "to": parts[0],
+                            "subject": parts[1],
+                            "body": parts[2]
+                        }
+                    else:
+                        raise ValueError(f"Invalid email format. Expected 'recipient|subject|body', got: {args}")
                 else:
-                    args = {}
+                    # For other tools, just pass the string as is
+                    args = {"query": args.strip('"')} if args else {}
 
-            if tool_name == "list_calendar_events":
-                return await self.calendar_service.list_events()
-            elif tool_name == "create_calendar_event":
-                # Format event details properly
-                event_details = {
-                    "summary": args.get("summary", "Workout session"),
-                    "start": {
-                        "dateTime": args.get("start_time", (datetime.now() + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0).isoformat()),
-                        "timeZone": "America/New_York"
-                    },
-                    "end": {
-                        "dateTime": args.get("end_time", (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0).isoformat()),
-                        "timeZone": "America/New_York"
-                    }
-                }
-                return await self.calendar_service.write_event(event_details)
-            elif tool_name == "delete_calendar_event":
-                # Delete a single event by ID
-                event_id = args.get("event_id")
-                if not event_id:
-                    raise ValueError("event_id is required for delete_calendar_event")
-                return await self.calendar_service.delete_event(event_id)
-            elif tool_name == "delete_events_in_range":
-                # Delete all events in a time range
-                time_range = args.get("time_range")
-                if not time_range:
-                    raise ValueError("time_range is required for delete_events_in_range")
-                return await self.calendar_service.delete_events_in_range(time_range)
-            elif tool_name == "send_email":
-                return await self.gmail_service.send_email(
-                    args.get("to", ""),
-                    args.get("subject", ""),
-                    args.get("body", "")
-                )
-            elif tool_name == "list_emails":
-                return await self.gmail_service.list_emails(
-                    args.get("max_results", 10)
-                )
-            elif tool_name == "read_email":
-                return await self.gmail_service.read_email(args.get("message_id", ""))
-            elif tool_name == "delete_email":
-                return await self.gmail_service.delete_email(args.get("message_id", ""))
-            elif tool_name == "search_emails":
-                return await self.gmail_service.search_emails(args.get("query", ""))
-            else:
-                raise ValueError(f"Unknown tool: {tool_name}")
+            # Execute the tool
+            logger.info(f"Executing tool {tool_name} with args: {args}")
+            result = await tool.func(args) if asyncio.iscoroutinefunction(tool.func) else tool.func(args)
+            logger.info(f"Tool {tool_name} returned: {result}")
+            return result
+
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {str(e)}")
             raise
 
     def _create_tools(self):
         """Create the tools for the agent."""
-        tools = []
+        # Clear existing tools
+        self.tools = []
+        
         if self.calendar_service:
             logger.debug("Adding Calendar tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="get_calendar_events",
                     func=self.calendar_service.get_upcoming_events,
@@ -761,11 +860,21 @@ Example output:
                     name="create_calendar_event",
                     func=self.calendar_service.write_event,
                     description="Create a new calendar event"
+                ),
+                Tool(
+                    name="resolve_calendar_conflict",
+                    func=self._resolve_calendar_conflict,
+                    description="Resolve calendar conflicts by replacing, deleting, or skipping conflicting events"
+                ),
+                Tool(
+                    name="delete_events_in_range",
+                    func=self.calendar_service.delete_events_in_range,
+                    description="Delete all calendar events within a specified time range"
                 )
             ])
         if self.gmail_service:
             logger.debug("Adding Gmail tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="send_email",
                     func=self.gmail_service.send_message,
@@ -774,7 +883,7 @@ Example output:
             ])
         if self.tasks_service:
             logger.debug("Adding Tasks tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="create_task",
                     func=self.tasks_service.create_task,
@@ -788,7 +897,7 @@ Example output:
             ])
         if self.drive_service:
             logger.debug("Adding Drive tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="search_drive",
                     func=self.drive_service.search_files,
@@ -797,7 +906,7 @@ Example output:
             ])
         if self.sheets_service:
             logger.debug("Adding Sheets tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="get_sheet_data",
                     func=self.sheets_service.get_sheet_data,
@@ -806,7 +915,7 @@ Example output:
             ])
         if self.maps_service:
             logger.debug("Adding Maps tools...")
-            tools.extend([
+            self.tools.extend([
                 Tool(
                     name="get_directions",
                     func=self.maps_service.get_directions,
@@ -818,8 +927,8 @@ Example output:
                     description="Find nearby workout locations (gyms, fitness centers, etc.) near a given location"
                 )
             ])
-        logger.info(f"Created {len(tools)} tools for agent")
-        return tools
+        logger.info(f"Created {len(self.tools)} tools for agent")
+        return self.tools
 
     async def _handle_calendar_operations(self, operation_json):
         """Handle all calendar operations through a single method."""
@@ -980,6 +1089,3 @@ Example output:
             logger.error(f"Error resolving calendar conflict: {e}")
             return f"Error resolving conflict: {str(e)}"
 
-def clear_global_conversation_history():
-    """Utility function to clear the global conversation history (for tests)."""
-    GLOBAL_CONVERSATION_HISTORY.clear()

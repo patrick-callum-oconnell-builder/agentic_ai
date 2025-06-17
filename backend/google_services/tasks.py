@@ -220,5 +220,5 @@ class GoogleTasksService(GoogleServiceBase):
                 return items
             return await asyncio.to_thread(fetch)
         except Exception as e:
-            print(f"Error fetching tasks: {str(e)}")
-            return [] 
+            logger.error(f"Error fetching tasks: {str(e)}")
+            raise 

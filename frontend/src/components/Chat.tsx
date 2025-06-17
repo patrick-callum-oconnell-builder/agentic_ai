@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -54,9 +56,6 @@ const Chat: React.FC = () => {
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No reader available');
 
-      let assistantMessage = '';
-      const timestamp = new Date();
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -72,21 +71,12 @@ const Chat: React.FC = () => {
             try {
               const parsed = JSON.parse(data);
               if (parsed.response) {
-                assistantMessage = parsed.response;
-                setMessages(prev => {
-                  const newMessages = [...prev];
-                  const lastMessage = newMessages[newMessages.length - 1];
-                  if (lastMessage?.role === 'assistant') {
-                    lastMessage.content = assistantMessage;
-                    return [...newMessages];
-                  } else {
-                    return [...newMessages, {
-                      role: 'assistant',
-                      content: assistantMessage,
-                      timestamp,
-                    }];
-                  }
-                });
+                // Always create a new message
+                setMessages(prev => [...prev, {
+                  role: 'assistant',
+                  content: parsed.response,
+                  timestamp: new Date(),
+                }]);
               }
             } catch (e) {
               console.error('Error parsing message:', e);
@@ -95,7 +85,7 @@ const Chat: React.FC = () => {
         }
       }
     } catch (error) {
-      console.error('Error:', error);
+      console.error('Error in handleSubmit:', error);
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: 'I apologize, but I encountered an error. Please try again.',
@@ -105,6 +95,14 @@ const Chat: React.FC = () => {
       setIsLoading(false);
       inputRef.current?.focus();
     }
+  };
+
+  const formatMessageContent = (content: string): string => {
+    // Remove quotes if they wrap the entire message
+    if (content.startsWith('"') && content.endsWith('"')) {
+      return content.slice(1, -1);
+    }
+    return content;
   };
 
   return (
@@ -122,11 +120,23 @@ const Chat: React.FC = () => {
       <div className="chat-messages">
         {messages.map((message, index) => (
           <div
-            key={index}
+            key={`${index}-${message.timestamp.getTime()}`}
             className={`message ${message.role}`}
           >
             <div className="message-content">
-              {message.content}
+              <ReactMarkdown 
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  a: ({ node, ...props }) => (
+                    <a {...props} target="_blank" rel="noopener noreferrer" />
+                  ),
+                  p: ({ node, ...props }) => (
+                    <p {...props} className="message-paragraph" />
+                  ),
+                }}
+              >
+                {formatMessageContent(message.content)}
+              </ReactMarkdown>
               <div className="message-time">
                 {format(message.timestamp, 'h:mm a')}
               </div>

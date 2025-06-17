@@ -162,7 +162,7 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error performing batch update: {e}")
             raise
 
-    def create_workout_tracker(self, title: str) -> Dict[str, Any]:
+    async def create_workout_tracker(self, title: str) -> Dict[str, Any]:
         """Create a new workout tracking spreadsheet."""
         try:
             spreadsheet = {
@@ -191,36 +191,39 @@ class GoogleSheetsService(GoogleServiceBase):
                 ]
             }
             
-            created_spreadsheet = self.service.spreadsheets().create(
-                body=spreadsheet
-            ).execute()
-            
-            # Add headers to the Workouts sheet
-            workout_headers = [
-                ['Date', 'Workout Type', 'Duration', 'Calories Burned', 'Notes']
-            ]
-            self.update_values(
-                created_spreadsheet['spreadsheetId'],
-                'Workouts!A1:E1',
-                workout_headers
-            )
-            
-            # Add headers to the Nutrition sheet
-            nutrition_headers = [
-                ['Date', 'Meal', 'Calories', 'Protein (g)', 'Carbs (g)', 'Fat (g)', 'Notes']
-            ]
-            self.update_values(
-                created_spreadsheet['spreadsheetId'],
-                'Nutrition!A1:G1',
-                nutrition_headers
-            )
-            
-            return created_spreadsheet
+            def create():
+                created_spreadsheet = self.service.spreadsheets().create(
+                    body=spreadsheet
+                ).execute()
+                
+                # Add headers to the Workouts sheet
+                workout_headers = [
+                    ['Date', 'Workout Type', 'Duration', 'Calories Burned', 'Notes']
+                ]
+                self.update_values(
+                    created_spreadsheet['spreadsheetId'],
+                    'Workouts!A1:E1',
+                    workout_headers
+                )
+                
+                # Add headers to the Nutrition sheet
+                nutrition_headers = [
+                    ['Date', 'Meal', 'Calories', 'Protein (g)', 'Carbs (g)', 'Fat (g)', 'Notes']
+                ]
+                self.update_values(
+                    created_spreadsheet['spreadsheetId'],
+                    'Nutrition!A1:G1',
+                    nutrition_headers
+                )
+                
+                return created_spreadsheet
+
+            return await asyncio.to_thread(create)
         except Exception as e:
             logger.error(f"Error creating workout tracker: {e}")
             raise
             
-    def add_workout_entry(self, spreadsheet_id: str, date: str, workout_type: str, 
+    async def add_workout_entry(self, spreadsheet_id: str, date: str, workout_type: str, 
                          duration: str, calories: str, notes: str = "") -> Dict[str, Any]:
         """
         Add a workout entry to the tracker.
@@ -238,12 +241,12 @@ class GoogleSheetsService(GoogleServiceBase):
         """
         try:
             values = [[date, workout_type, duration, calories, notes]]
-            return self.append_values(spreadsheet_id, 'Workouts!A:E', values)
+            return await self.append_values(spreadsheet_id, 'Workouts!A:E', values)
         except Exception as e:
             logger.error(f"Error adding workout entry: {e}")
             raise
             
-    def add_nutrition_entry(self, spreadsheet_id: str, date: str, meal: str,
+    async def add_nutrition_entry(self, spreadsheet_id: str, date: str, meal: str,
                            calories: str, protein: str, carbs: str, fat: str,
                            notes: str = "") -> Dict[str, Any]:
         """
@@ -264,7 +267,7 @@ class GoogleSheetsService(GoogleServiceBase):
         """
         try:
             values = [[date, meal, calories, protein, carbs, fat, notes]]
-            return self.append_values(spreadsheet_id, 'Nutrition!A:G', values)
+            return await self.append_values(spreadsheet_id, 'Nutrition!A:G', values)
         except Exception as e:
             logger.error(f"Error adding nutrition entry: {e}")
             raise

@@ -58,7 +58,7 @@ class GoogleGmailService(GoogleServiceBase):
             logger.error(f"Error fetching emails: {e}")
             raise
 
-    def search_emails(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    async def search_emails(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """Search for emails matching a specific query."""
         try:
             # Convert natural language query to Gmail search syntax if needed
@@ -73,32 +73,35 @@ class GoogleGmailService(GoogleServiceBase):
                 last_month = datetime.now() - timedelta(days=30)
                 query = f"{query} after:{last_month.strftime('%Y/%m/01')} before:{datetime.now().strftime('%Y/%m/01')}"
 
-            results = self.service.users().messages().list(
-                userId='me',
-                q=query,
-                maxResults=max_results
-            ).execute()
-            messages = results.get('messages', [])
-            
-            emails = []
-            for message in messages:
-                msg = self.service.users().messages().get(
+            def fetch():
+                results = self.service.users().messages().list(
                     userId='me',
-                    id=message['id']
+                    q=query,
+                    maxResults=max_results
                 ).execute()
+                messages = results.get('messages', [])
                 
-                headers = msg['payload']['headers']
-                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
-                sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown Sender')
+                emails = []
+                for message in messages:
+                    msg = self.service.users().messages().get(
+                        userId='me',
+                        id=message['id']
+                    ).execute()
+                    
+                    headers = msg['payload']['headers']
+                    subject = next((h['value'] for h in headers if h['name'] == 'Subject'), 'No Subject')
+                    sender = next((h['value'] for h in headers if h['name'] == 'From'), 'Unknown Sender')
+                    
+                    emails.append({
+                        'id': message['id'],
+                        'subject': subject,
+                        'sender': sender,
+                        'snippet': msg['snippet']
+                    })
                 
-                emails.append({
-                    'id': message['id'],
-                    'subject': subject,
-                    'sender': sender,
-                    'snippet': msg['snippet']
-                })
-            
-            return emails
+                return emails
+
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error searching emails: {e}")
             raise

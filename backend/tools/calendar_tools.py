@@ -1,24 +1,12 @@
 import json
 from datetime import datetime, timedelta
 
-async def get_calendar_events(service, time_min=None, time_max=None, max_results=10):
-    """Get calendar events for the next 7 days."""
+async def get_calendar_events(service, query=None, max_results=10):
+    """Get calendar events based on the query."""
     try:
-        if not time_min:
-            time_min = datetime.utcnow().isoformat() + 'Z'
-        if not time_max:
-            time_max = (datetime.utcnow() + timedelta(days=7)).isoformat() + 'Z'
-
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=time_min,
-            timeMax=time_max,
-            maxResults=max_results,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-
-        events = events_result.get('items', [])
+        # Use the service's get_upcoming_events method which handles time ranges properly
+        events = await service.get_upcoming_events(query, max_results)
+        
         if not events:
             return "No upcoming events found."
 
@@ -36,4 +24,4 @@ async def get_calendar_events(service, time_min=None, time_max=None, max_results
         return json.dumps(formatted_events, indent=2)
     except Exception as e:
         print(f"Error getting calendar events: {str(e)}")
-        return "I apologize, but I encountered an issue while trying to fetch your calendar events. Please try again later." 
+        return "I encountered an issue while fetching your calendar events. Please try again." 

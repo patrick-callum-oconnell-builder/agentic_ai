@@ -107,6 +107,96 @@
   flex: 1;
 }
 
+.message-paragraph {
+  margin: 0 0 0.75rem 0;
+  line-height: 1.6;
+  color: inherit;
+}
+
+.message-paragraph:last-child {
+  margin-bottom: 0;
+}
+
+.message-content a {
+  color: var(--color-accent);
+  text-decoration: none;
+  border-bottom: 1px solid var(--color-accent);
+  transition: all 0.2s ease;
+  padding: 0 2px;
+  font-weight: 500;
+}
+
+.message-content a:hover {
+  color: var(--color-primary);
+  border-bottom-color: var(--color-primary);
+  background-color: rgba(197, 165, 114, 0.1);
+}
+
+.message.user .message-content a {
+  color: var(--color-white);
+  border-bottom-color: var(--color-white);
+}
+
+.message.user .message-content a:hover {
+  color: var(--color-gray-200);
+  border-bottom-color: var(--color-gray-200);
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.message-content ul {
+  margin: 0.5rem 0;
+  padding-left: 1.5rem;
+}
+
+.message-content li {
+  margin: 0.25rem 0;
+  line-height: 1.6;
+}
+
+.message-content strong {
+  font-weight: 600;
+}
+
+.message-content em {
+  font-style: italic;
+}
+
+.message-content code {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 0.2em 0.4em;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.9em;
+}
+
+.message.user .message-content code {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.message-content pre {
+  background-color: rgba(0, 0, 0, 0.05);
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 0.5rem 0;
+}
+
+.message.user .message-content pre {
+  background-color: rgba(255, 255, 255, 0.1);
+}
+
+.message-content blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 0.5rem 0;
+  padding: 0.5rem 0 0.5rem 1rem;
+  color: var(--color-gray-700);
+}
+
+.message.user .message-content blockquote {
+  border-left-color: var(--color-white);
+  color: var(--color-gray-200);
+}
+
 .message-time {
   font-size: 0.75rem;
   color: var(--color-text-light);
@@ -119,6 +209,14 @@
 
 .message.assistant .message-time {
   color: #6B8AA8;  /* Muted blue-gray for timestamp */
+}
+
+.message.assistant .message-content a {
+  color: var(--color-accent);
+}
+
+.message.assistant .message-content a:hover {
+  color: var(--color-primary);
 }
 
 .chat-input-container {
