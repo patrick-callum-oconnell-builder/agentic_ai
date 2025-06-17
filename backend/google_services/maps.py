@@ -140,38 +140,24 @@ class GoogleMapsService(GoogleAPIService):
         """Cleanup when the service is destroyed."""
         self.client = None
 
-    async def find_nearby_workout_locations(self, location: Union[Dict[str, float], str], radius: int = 5000) -> List[Dict]:
-        """Asynchronously find nearby workout locations (gyms, fitness centers, etc.)."""
+    async def find_nearby_workout_locations(self, location_or_address):
+        """Find nearby gyms or fitness centers given an address or lat/lng."""
         try:
-            def search():
-                # Convert location to tuple if it's a string
-                if isinstance(location, str):
-                    # Geocode the location if it's a natural language query
-                    geocode_result = self.client.geocode(location)
-                    if not geocode_result:
-                        raise ValueError(f"Could not geocode location: {location}")
-                    location_tuple = (
-                        geocode_result[0]['geometry']['location']['lat'],
-                        geocode_result[0]['geometry']['location']['lng']
-                    )
-                else:
-                    location_tuple = (location['lat'], location['lng'])
-
-                # Use the googlemaps client to search for gyms and fitness centers
-                places_result = self.client.places_nearby(
-                    location=location_tuple,
-                    radius=radius,
-                    type='gym'
-                )
-                
-                if not places_result or 'results' not in places_result:
-                    return []
-                
-                return places_result['results']
-            return await asyncio.to_thread(search)
+            if isinstance(location_or_address, str):
+                # Geocode the address to get lat/lng
+                lat, lng = await self.geocode_address(location_or_address)
+            elif isinstance(location_or_address, dict):
+                lat = location_or_address.get('lat')
+                lng = location_or_address.get('lng')
+                if lat is None or lng is None:
+                    raise ValueError("Missing lat/lng in location dict.")
+            else:
+                raise ValueError("Invalid location input.")
+            # Now search for gyms/fitness centers
+            return await self._find_places_nearby(lat, lng, type_filter=['gym', 'fitness'])
         except Exception as e:
             logger.error(f"Error finding nearby workout locations: {e}")
-            raise
+            return []
 
     async def get_location_details(self, place_id: str) -> Dict[str, Any]:
         """Asynchronously get detailed information about a specific location."""
@@ -232,3 +218,46 @@ class GoogleMapsService(GoogleAPIService):
     def initialize_service(self):
         """Initialize the Google Maps service."""
         return self.client 
+
+    async def geocode_address(self, address: str):
+        """Geocode an address to (lat, lng) using the Google Maps API."""
+        try:
+            def geocode():
+                result = self.client.geocode(address)
+                if not result:
+                    raise ValueError(f"No geocoding result for address: {address}")
+                location = result[0]['geometry']['location']
+                return location['lat'], location['lng']
+            return await asyncio.to_thread(geocode)
+        except Exception as e:
+            logger.error(f"Error geocoding address '{address}': {e}")
+            raise 
+
+    async def _find_places_nearby(self, lat, lng, type_filter=None, radius=50000):
+        """Find places nearby given lat/lng and type filter."""
+        try:
+            def search():
+                params = {
+                    "location": f"{lat},{lng}",
+                    "radius": radius,
+                    "key": self.api_key,
+                    "type": "gym"
+                }
+                url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                results = response.json().get('results', [])
+                places = []
+                for result in results:
+                    places.append({
+                        'name': result.get('name', 'Unknown'),
+                        'address': result.get('vicinity', 'No address'),
+                        'rating': result.get('rating', 'No rating'),
+                        'place_id': result.get('place_id', ''),
+                        'location': result.get('geometry', {}).get('location', {})
+                    })
+                return places
+            return await asyncio.to_thread(search)
+        except Exception as e:
+            logger.error(f"Error finding places nearby: {e}")
+            return [] 
