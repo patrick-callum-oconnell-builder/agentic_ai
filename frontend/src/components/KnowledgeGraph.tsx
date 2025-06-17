@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import ForceGraph2D from 'react-force-graph-2d';
 
 interface Node {
@@ -23,6 +23,9 @@ const KnowledgeGraph: React.FC = () => {
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [dimensions, setDimensions] = useState({ width: 400, height: 400 });
+  const fgRef = useRef<any>(null);
 
   useEffect(() => {
     fetch('http://localhost:8000/api/knowledge-graph')
@@ -51,20 +54,50 @@ const KnowledgeGraph: React.FC = () => {
       });
   }, []);
 
+  useEffect(() => {
+    function updateSize() {
+      if (containerRef.current) {
+        setDimensions({
+          width: containerRef.current.offsetWidth,
+          height: containerRef.current.offsetHeight
+        });
+      }
+    }
+    updateSize();
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
+  useEffect(() => {
+    if (fgRef.current) {
+      fgRef.current.d3Force('link')?.distance(120);
+    }
+  }, [dimensions, data]);
+
   if (loading) return <div style={{ color: '#888', textAlign: 'center', width: '100%' }}>Loading knowledge graph...</div>;
   if (error) return <div style={{ color: 'red', textAlign: 'center', width: '100%' }}>Error: {error}</div>;
 
   return (
-    <div style={{ width: '100%', height: '100%' }}>
+    <div ref={containerRef} style={{ width: '100%', height: '100%' }}>
       <ForceGraph2D
+        ref={fgRef}
         graphData={data}
         nodeLabel={(node: Node) => `${node.id} (${node.type})`}
         linkLabel={(link: Link) => link.type}
         nodeAutoColorBy="type"
         linkDirectionalArrowLength={6}
         linkDirectionalArrowRelPos={1}
-        width={900}
-        height={600}
+        nodeRelSize={12}
+        width={dimensions.width}
+        height={dimensions.height}
+        nodeCanvasObjectMode={() => 'after'}
+        nodeCanvasObject={(node: any, ctx, globalScale) => {
+          ctx.font = `${16/globalScale}px Sans-Serif`;
+          ctx.fillStyle = '#222';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(node.id, (node.x ?? 0), (node.y ?? 0) + 18);
+        }}
       />
     </div>
   );
