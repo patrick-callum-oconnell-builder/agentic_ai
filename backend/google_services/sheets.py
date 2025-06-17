@@ -106,34 +106,32 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error getting values: {e}")
             raise
             
-    def append_values(self, spreadsheet_id: str, range_name: str, values: List[List[Any]]) -> Dict:
+    async def append_values(self, spreadsheet_id: str, range_name: str, values: List[List[Any]]) -> Dict[str, Any]:
         """
         Append values to a spreadsheet.
         
         Args:
             spreadsheet_id (str): ID of the spreadsheet
-            range_name (str): Range to append to (e.g., 'Sheet1!A:B')
+            range_name (str): Range to append to (e.g., 'Sheet1!A1')
             values (List[List[Any]]): Values to append
             
         Returns:
-            Dict: Append response
+            Dict: Update response
         """
         try:
             body = {
                 'values': values
             }
-            
             result = self.service.spreadsheets().values().append(
                 spreadsheetId=spreadsheet_id,
                 range=range_name,
-                valueInputOption='RAW',
+                valueInputOption='USER_ENTERED',
                 insertDataOption='INSERT_ROWS',
                 body=body
             ).execute()
-            
             return result
         except Exception as e:
-            logger.error(f"Error appending values: {e}")
+            logger.error(f"Error appending values: {str(e)}")
             raise
             
     def batch_update(self, spreadsheet_id: str, requests: List[Dict]) -> Dict:

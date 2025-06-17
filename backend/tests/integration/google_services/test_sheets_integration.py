@@ -10,7 +10,7 @@ async def test_create_workout_tracker(agent):
     # Explicitly await the agent fixture
     agent_instance = await agent
     try:
-        spreadsheet = agent_instance.sheets_service.create_workout_tracker("Workout Tracker")
+        spreadsheet = await agent_instance.sheets_service.create_workout_tracker("Workout Tracker")
         assert spreadsheet is not None
         assert 'spreadsheetId' in spreadsheet
         print(f"Sheets test: Successfully created workout tracker with id {spreadsheet['spreadsheetId']}")
@@ -23,7 +23,7 @@ async def test_add_workout_entry(agent):
     agent_instance = await agent
     try:
         # First create a spreadsheet
-        spreadsheet = agent_instance.sheets_service.create_workout_tracker("Workout Tracker")
+        spreadsheet = await agent_instance.sheets_service.create_workout_tracker("Workout Tracker")
         assert spreadsheet is not None
         assert 'spreadsheetId' in spreadsheet
         
@@ -33,7 +33,7 @@ async def test_add_workout_entry(agent):
         duration = "60"
         calories = "300"
         notes = "Focus on chest and shoulders"
-        result = agent_instance.sheets_service.add_workout_entry(
+        result = await agent_instance.sheets_service.add_workout_entry(
             spreadsheet_id=spreadsheet['spreadsheetId'],
             date=date,
             workout_type=workout_type,

@@ -137,3 +137,18 @@ class GoogleDriveService(GoogleServiceBase):
         except Exception as e:
             logger.error(f"Error getting recent files: {e}")
             raise 
+
+    async def search_files(self, query: str) -> List[Dict[str, Any]]:
+        """Search for files in Google Drive matching the query."""
+        try:
+            results = await asyncio.to_thread(
+                lambda: self.service.files().list(
+                    q=query,
+                    spaces='drive',
+                    fields='files(id, name, mimeType)'
+                ).execute()
+            )
+            return results.get('files', [])
+        except Exception as e:
+            logger.error(f"Error searching Drive files: {str(e)}")
+            return [] 

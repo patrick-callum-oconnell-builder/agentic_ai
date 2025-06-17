@@ -39,13 +39,19 @@ class GoogleCalendarService(GoogleServiceBase):
             def fetch():
                 # Always use timezone-aware datetimes
                 now = datetime.now(dt_timezone.utc)
-                time_min = now.isoformat()
-                time_max = None
+                
+                # Extract parameters from args
+                if isinstance(args, dict):
+                    time_min = args.get('timeMin', now.isoformat())
+                    time_max = args.get('timeMax')
+                    query = args.get('query')
+                else:
+                    time_min = now.isoformat()
+                    time_max = None
+                    query = args
 
-                # Extract query from args if it's a dictionary
-                query = args.get('query') if isinstance(args, dict) else args
-
-                if query and isinstance(query, str):
+                # If query is provided and no time range is specified, try to parse it
+                if query and isinstance(query, str) and not time_max:
                     # Parse natural language query into a date range
                     if 'week' in query.lower():
                         # Set time_min to start of current week (Monday)
@@ -101,6 +107,7 @@ class GoogleCalendarService(GoogleServiceBase):
                             continue
                     
                     filtered_events.append(event)
+                logger.info(f"[CALENDAR] Query: {query}, time_min: {time_min}, time_max: {time_max}, returned: {len(filtered_events)} events")
                 return filtered_events[:max_results]
 
             return await asyncio.to_thread(fetch)
@@ -404,8 +411,14 @@ class GoogleCalendarService(GoogleServiceBase):
 
                 # Handle both string and dictionary inputs
                 if isinstance(time_range, dict):
+                    # If it has start_time/end_time keys, use those directly
+                    if 'start_time' in time_range or 'end_time' in time_range:
+                        start_utc = time_range.get('start_time')
+                        end_utc = time_range.get('end_time')
+                        if not start_utc:
+                            raise ValueError("Start time is required")
                     # If it has a 'time_range' key, use that value
-                    if 'time_range' in time_range:
+                    elif 'time_range' in time_range:
                         time_range_str = time_range['time_range']
                         # Handle pipe-separated or comma-separated time ranges
                         if '|' in time_range_str:
@@ -418,6 +431,15 @@ class GoogleCalendarService(GoogleServiceBase):
                         
                         start_date = dateparser.parse(start_str, settings={'PREFER_DATES_FROM': 'future'})
                         end_date = dateparser.parse(end_str, settings={'PREFER_DATES_FROM': 'future'}) if end_str else None
+                        
+                        # Ensure dates are timezone-aware
+                        if start_date.tzinfo is None:
+                            start_date = self.user_tz.localize(start_date)
+                        if end_date and end_date.tzinfo is None:
+                            end_date = self.user_tz.localize(end_date)
+                            
+                        start_utc = start_date.astimezone(dt_timezone.utc).isoformat()
+                        end_utc = end_date.astimezone(dt_timezone.utc).isoformat() if end_date else None
                     # If it has start/end keys, use those
                     elif 'start' in time_range or 'end' in time_range:
                         start_str = time_range.get('start', '')
@@ -427,27 +449,40 @@ class GoogleCalendarService(GoogleServiceBase):
                         
                         start_date = dateparser.parse(start_str, settings={'PREFER_DATES_FROM': 'future'})
                         end_date = dateparser.parse(end_str, settings={'PREFER_DATES_FROM': 'future'}) if end_str else None
+                        
+                        # Ensure dates are timezone-aware
+                        if start_date.tzinfo is None:
+                            start_date = self.user_tz.localize(start_date)
+                        if end_date and end_date.tzinfo is None:
+                            end_date = self.user_tz.localize(end_date)
+                            
+                        start_utc = start_date.astimezone(dt_timezone.utc).isoformat()
+                        end_utc = end_date.astimezone(dt_timezone.utc).isoformat() if end_date else None
                     # Otherwise treat the dict as a string
                     else:
                         start_date = dateparser.parse(str(time_range), settings={'PREFER_DATES_FROM': 'future'})
                         end_date = None
+                        
+                        # Ensure dates are timezone-aware
+                        if start_date.tzinfo is None:
+                            start_date = self.user_tz.localize(start_date)
+                            
+                        start_utc = start_date.astimezone(dt_timezone.utc).isoformat()
+                        end_utc = None
                 else:
                     # Handle string input
                     start_date = dateparser.parse(str(time_range).strip('"'), settings={'PREFER_DATES_FROM': 'future'})
                     end_date = None
+                    
+                    # Ensure dates are timezone-aware
+                    if start_date.tzinfo is None:
+                        start_date = self.user_tz.localize(start_date)
+                        
+                    start_utc = start_date.astimezone(dt_timezone.utc).isoformat()
+                    end_utc = None
 
-                if not start_date:
+                if not start_utc:
                     raise ValueError(f"Could not parse time range: {time_range}")
-
-                # Ensure dates are timezone-aware
-                if start_date.tzinfo is None:
-                    start_date = self.user_tz.localize(start_date)
-                if end_date and end_date.tzinfo is None:
-                    end_date = self.user_tz.localize(end_date)
-
-                # Convert to UTC for API call
-                start_utc = start_date.astimezone(dt_timezone.utc).isoformat()
-                end_utc = end_date.astimezone(dt_timezone.utc).isoformat() if end_date else None
 
                 # Get events in range
                 events_result = self.service.events().list(
@@ -479,3 +514,25 @@ class GoogleCalendarService(GoogleServiceBase):
         except Exception as e:
             logger.error(f"Error deleting events in range: {e}")
             raise
+
+    async def resolve_conflict(self, proposed_event, conflicting_events, resolution_action):
+        """Resolve calendar conflicts by replacing, deleting, or skipping conflicting events."""
+        if resolution_action == 'replace':
+            # Delete all conflicting events
+            for event in conflicting_events:
+                event_id = event.get('id')
+                if event_id:
+                    await self.delete_event(event_id)
+            # Create the proposed event
+            return await self.write_event(proposed_event)
+        elif resolution_action == 'skip':
+            return {'skipped': True, 'message': 'Event creation skipped due to conflict.'}
+        elif resolution_action == 'delete':
+            # Delete the first conflicting event only
+            if conflicting_events:
+                event_id = conflicting_events[0].get('id')
+                if event_id:
+                    await self.delete_event(event_id)
+            return await self.write_event(proposed_event)
+        else:
+            return {'error': 'Unknown resolution action.'}

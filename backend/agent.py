@@ -681,31 +681,42 @@ When the user asks to schedule a workout:
         return responses
 
     async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
-        """Get a confirmation message for a tool call."""
+        """Get a confirmation message for a tool call.
+        
+        This method generates a simple statement of what action the agent is about to take.
+        It does not ask for confirmation - that's handled by the agent's conversation flow.
+        """
         try:
-            # Special handling for get_calendar_events: always return a concise, context-aware message
-            if tool_name == "get_calendar_events":
-                # Try to extract the time frame from args
-                timeframe = None
-                if args:
-                    # Remove quotes if present
-                    arg_str = args.strip('"')
-                    # Only use if it matches a known time frame
-                    for pattern in TIMEFRAME_PATTERNS:
-                        if re.search(pattern, arg_str, re.IGNORECASE):
-                            timeframe = pattern
-                            break
-                if timeframe:
-                    return f"Checking your calendar for events {timeframe}..."
-                else:
-                    return "Checking your calendar for upcoming events..."
-            # Default: use LLM for other tools
-            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.\n\nTool arguments: {args}\n\nPlease provide a natural, conversational response that is concise and context-appropriate."""
-            response = await self.llm.ainvoke(prompt)
+            # Create a prompt that guides the LLM to generate a simple action statement
+            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
+
+Tool arguments: {args}
+
+Please provide a simple, natural statement that:
+1. Clearly states what action will be taken
+2. Includes the key details from the arguments in a user-friendly format
+3. Is concise and context-appropriate
+4. Does NOT ask for confirmation or end with a question
+
+Example formats:
+- For calendar events: "I'll schedule a [workout type] for [time] at [location]"
+- For location searches: "I'll search for [location type] near [location]"
+- For task creation: "I'll create a task to [task description] due [date]"
+- For calendar clearing: "I'll clear your calendar for [time period]"
+
+Please provide the action statement:"""
+
+            messages = [
+                SystemMessage(content="You are a helpful personal trainer AI assistant. Always respond in clear, natural language. Be concise and direct in stating what action you're about to take."),
+                HumanMessage(content=prompt)
+            ]
+
+            response = await self.llm.ainvoke(messages)
             return response.content.strip() if hasattr(response, 'content') else str(response)
+
         except Exception as e:
             logger.error(f"Error generating tool confirmation message: {e}")
-            return "I'm processing your request..."
+            return "I'm about to process your request."
 
     async def process_messages(self, messages: List[BaseMessage]) -> str:
         """Process a list of messages and return a response as a string."""
