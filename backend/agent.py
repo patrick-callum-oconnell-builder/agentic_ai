@@ -25,6 +25,7 @@ from langchain.agents import AgentExecutor
 from langchain.agents import ZeroShotAgent
 from langchain.chains import LLMChain
 import pytz
+import dateparser
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -338,19 +339,49 @@ Always be professional, encouraging, and focused on helping the user achieve the
             "type": "done"
         }
 
-    async def _summarize_tool_result(self, tool_name, tool_result):
-        """Prompt the LLM to summarize the tool result in natural language."""
-        summary_prompt = f"Summarize the following tool result for the user in clear, natural language. Be concise, friendly, and helpful.\n\nTOOL RESULT: {tool_result}"
-        messages = [
-            SystemMessage(content="You are a helpful assistant. Always respond in clear, natural language, never as a code block or raw data."),
-            HumanMessage(content=summary_prompt)
-        ]
+    async def _summarize_tool_result(self, tool_name: str, tool_result: Any) -> str:
+        """Summarize a tool result using the LLM."""
         try:
-            response = await self.llm.ainvoke(messages)
-            return response.content.strip()
+            # Create a prompt for the LLM to summarize the tool result
+            prompt = f"""You are a helpful personal trainer AI assistant. Summarize the result of the {tool_name} tool in a user-friendly way.
+
+Tool result: {json.dumps(tool_result, default=str)}
+
+Guidelines:
+1. Be concise but informative
+2. Use natural, conversational language
+3. Format any dates, times, or numbers in a readable way
+4. If there are any errors or issues, explain them clearly
+5. If the result is a list or complex data, summarize the key points
+6. Use markdown formatting for better readability
+7. For calendar events, ALWAYS include:
+   - Event title
+   - Date and time in a readable format
+   - A clickable link to the event using markdown [Event Link](url)
+   - Any other relevant details
+8. If there are any links or references, make them clickable using markdown
+
+Return ONLY the summary, no additional text or explanation."""
+
+            # Get the LLM's response
+            response = await self.llm.ainvoke(prompt)
+            
+            # Handle both string and AIMessage responses
+            if isinstance(response, str):
+                response_text = response
+            elif hasattr(response, 'content'):
+                response_text = response.content
+            else:
+                response_text = str(response)
+            
+            if response_text and response_text.strip():
+                return response_text.strip()
+            else:
+                logger.error(f"LLM returned empty response for tool {tool_name} and result {tool_result}")
+                raise RuntimeError("LLM returned empty response.")
         except Exception as e:
-            logger.error(f"LLM failed to summarize tool result: {e}")
-            return None
+            logger.error(f"Error summarizing tool result with LLM for tool {tool_name}: {e}")
+            raise
 
     async def agent_conversation_loop(self, user_input):
         """Loop-based orchestration to support multi-step agent actions with enforced tool result summarization."""
@@ -388,68 +419,49 @@ Always be professional, encouraging, and focused on helping the user achieve the
             elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
                 # Always require the LLM to summarize the tool result for the user
                 summary = await self._summarize_tool_result(last_tool, tool_result)
-                if summary:
-                    responses.append(summary)
-                    state = "DONE"
-                else:
-                    # If agent does not summarize, provide a default summary based on the tool
-                    print(f"Using default summary for tool: {last_tool}")
-                    if last_tool == "get_calendar_events":
-                        responses.append(f"Here are your upcoming workouts: {tool_result}")
-                    elif last_tool == "get_directions":
-                        responses.append(f"Here are the directions to your workout location: {tool_result}")
-                    elif last_tool == "create_calendar_event":
-                        responses.append("Your workout has been scheduled in your calendar!")
-                    else:
-                        responses.append(f"I've completed your request. Here's what I found: {tool_result}")
-                    state = "DONE"
-
-        # Final fallback: if responses is empty but we have a tool_result and last_tool, return the default summary
-        if not responses and tool_result and last_tool:
-            print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
-            if last_tool == "get_calendar_events":
-                responses.append(f"Here are your upcoming workouts: {tool_result}")
-            elif last_tool == "get_directions":
-                responses.append(f"Here are the directions to your workout location: {tool_result}")
-            elif last_tool == "create_calendar_event":
-                responses.append("Your workout has been scheduled in your calendar!")
-            else:
-                responses.append(f"I've completed your request. Here's what I found: {tool_result}")
+                if not summary:
+                    logger.error(f"LLM returned empty summary for tool {last_tool} and result {tool_result}")
+                    raise RuntimeError("LLM returned empty summary")
+                responses.append(summary)
+                state = "DONE"
 
         print(f"Final responses: {responses}")
         return responses
 
-    async def _get_tool_confirmation_message(self, tool_name: str, tool_args: str) -> str:
-        """Generate a user-friendly confirmation message before calling a tool. For create_calendar_event, use the LLM to make it natural."""
-        if tool_name == "create_calendar_event":
-            try:
-                prompt = f"""
-Rephrase the following workout event description into a natural, concise message indicating that you are processing the request, as if you are their personal trainer assistant. Example: 'I'll schedule your 10am workout session in your calendar for tomorrow.'
+    async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
+        """Get a user-friendly confirmation message for a tool call."""
+        try:
+            # Create a prompt that encourages detailed, natural responses
+            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
 
-Event description: {tool_args}
+Tool arguments: {args}
 
-Confirmation message:"""
-                messages = [
-                    SystemMessage(content="You are a helpful assistant that writes natural, concise messages indicating that you are processing a request. Never indicate that the action is already completed."),
-                    HumanMessage(content=prompt)
-                ]
-                response = await self.llm.ainvoke(messages)
-                return response.content.strip()
-            except Exception as e:
-                logger.error(f"LLM failed to generate confirmation message: {e}")
-                return f"I'll schedule your workout: {tool_args}"
-        tool_messages = {
-            "get_calendar_events": "I'll check your calendar for upcoming events.",
-            "resolve_calendar_conflict": "I'll resolve the calendar conflict as requested.",
-            "send_email": "I'll send that email for you.",
-            "create_task": f"I'll create a task for you: {tool_args}",
-            "get_tasks": "I'll check your tasks.",
-            "search_drive": f"I'll search your Drive for: {tool_args}",
-            "get_sheet_data": "I'll get that data from your spreadsheet.",
-            "get_directions": f"I'll get directions for you: {tool_args}",
-            "find_nearby_workout_locations": f"I'll find nearby workout locations: {tool_args}"
-        }
-        return tool_messages.get(tool_name, f"I'll help you with that using {tool_name}.")
+Please provide a natural, conversational response that:
+1. Confirms what you're about to do
+2. Includes relevant details from the request
+3. For calendar events, mention the event title, time, and that you'll provide a link
+4. For emails, mention the recipient and subject
+5. For tasks, mention the task name and due date
+6. For location searches, mention the location and what you're looking for
+7. Avoid using technical terms or mentioning the tool name
+8. Be encouraging and helpful
+9. NEVER use generic responses like "I'll add that to your calendar" or "Your workout has been scheduled"
+10. Always include specific details from the request
+
+Example responses:
+- "I'll schedule your Upper Body Workout for tomorrow at 10 AM, focusing on chest and shoulders. Once it's set up, I'll share a link so you can view all the details in your calendar."
+- "I'll send an email to Coach Sarah (sarah@gym.com) with your latest progress report, titled 'Weekly Progress Update - Strength Gains'."
+- "I'll create a task to track your daily protein intake (target: 150g) that will be due this Friday."
+
+Please provide a natural, detailed response:"""
+
+            response = await self.llm.ainvoke(prompt)
+            if not response or not hasattr(response, 'content') or not response.content.strip():
+                raise RuntimeError("LLM returned empty response")
+            return response.content.strip()
+        except Exception as e:
+            logger.error(f"Error getting LLM confirmation message: {e}")
+            raise
 
     async def process_messages(self, messages):
         """Process a list of messages and return a response. Uses global conversation history for context, returns only the latest response as a string."""
@@ -521,7 +533,7 @@ Confirmation message:"""
             yield response
 
     async def agent_conversation_loop_stream(self, user_input):
-        """Streaming version of the conversation loop that yields responses as they become available."""
+        """Stream-based orchestration to support multi-step agent actions with enforced tool result summarization."""
         state = "AGENT_THINKING"
         history = [user_input]
         agent_action = None
@@ -555,33 +567,11 @@ Confirmation message:"""
             elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
                 # Always require the LLM to summarize the tool result for the user
                 summary = await self._summarize_tool_result(last_tool, tool_result)
-                if summary:
-                    yield summary
-                    state = "DONE"
-                else:
-                    # If agent does not summarize, provide a default summary based on the tool
-                    print(f"Using default summary for tool: {last_tool}")
-                    if last_tool == "get_calendar_events":
-                        yield f"Here are your upcoming workouts: {tool_result}"
-                    elif last_tool == "get_directions":
-                        yield f"Here are the directions to your workout location: {tool_result}"
-                    elif last_tool == "create_calendar_event":
-                        yield "Your workout has been scheduled in your calendar!"
-                    else:
-                        yield f"I've completed your request. Here's what I found: {tool_result}"
-                    state = "DONE"
-
-        # Final fallback: if we have a tool_result and last_tool but no responses yielded
-        if tool_result and last_tool:
-            print(f"Final fallback triggered. last_tool: {last_tool}, tool_result: {tool_result}")
-            if last_tool == "get_calendar_events":
-                yield f"Here are your upcoming workouts: {tool_result}"
-            elif last_tool == "get_directions":
-                yield f"Here are the directions to your workout location: {tool_result}"
-            elif last_tool == "create_calendar_event":
-                yield "Your workout has been scheduled in your calendar!"
-            else:
-                yield f"I've completed your request. Here's what I found: {tool_result}"
+                if not summary:
+                    logger.error(f"LLM returned empty summary for tool {last_tool} and result {tool_result}")
+                    raise RuntimeError("LLM returned empty summary")
+                yield summary
+                state = "DONE"
 
     def _parse_tool_string(self, output_str):
         """Parse tool name and input from a raw tool invocation string."""
@@ -673,97 +663,88 @@ Example output:
             })
 
     async def _execute_tool(self, tool_name: str, args: Union[str, Dict[str, Any]]) -> Any:
-        """Execute a tool with the given arguments.
-        
-        Args:
-            tool_name: Name of the tool to execute
-            args: Either a string or dictionary containing the tool arguments
-            
-        Returns:
-            The result of the tool execution
-        """
+        """Execute a tool and return its result."""
         try:
             # Normalize args to dictionary format
-            normalized_args = {}
             if isinstance(args, str):
-                if tool_name == "create_calendar_event":
+                if tool_name == "delete_events_in_range":
+                    # Parse the time range from natural language
                     try:
-                        normalized_args = json.loads(args)
-                    except json.JSONDecodeError:
-                        # If not JSON, treat as a simple string description
-                        normalized_args = {
-                            "summary": args,
-                            "description": args,
-                            "start": {
-                                "dateTime": (datetime.now() + timedelta(days=1)).isoformat(),
-                                "timeZone": "UTC"
-                            },
-                            "end": {
-                                "dateTime": (datetime.now() + timedelta(days=1, hours=1)).isoformat(),
-                                "timeZone": "UTC"
-                            }
-                        }
-                elif tool_name == "resolve_calendar_conflict":
-                    try:
-                        normalized_args = json.loads(args)
-                    except json.JSONDecodeError:
-                        return "Error: Invalid conflict details format"
-                elif tool_name == "delete_events_in_range":
-                    normalized_args = {"time_range": args}
-                elif tool_name == "send_email":
-                    recipient, subject, body = args.split("|", 2)
-                    normalized_args = {
-                        "recipient": recipient,
-                        "subject": subject,
-                        "body": body
-                    }
-                elif tool_name == "create_task":
-                    normalized_args = {"task_details": args}
-                elif tool_name == "get_tasks":
-                    normalized_args = {"filter": args}
-                elif tool_name == "search_drive":
-                    normalized_args = {"query": args}
-                elif tool_name == "get_sheet_data":
-                    normalized_args = {"sheet_id": args}
-                elif tool_name == "get_directions":
-                    normalized_args = {"directions_request": args}
-                elif tool_name == "find_nearby_workout_locations":
-                    normalized_args = {"location": args}
-            else:
-                normalized_args = args
+                        # Check if it's already in ISO format with a separator
+                        if '|' in args or ',' in args:
+                            # Keep the format as is - the calendar service can handle both separators
+                            args = {"time_range": args.strip('"')}
+                        else:
+                            # Try to parse as a date range
+                            start_date = dateparser.parse(args.strip('"'), settings={'PREFER_DATES_FROM': 'future'})
+                            if start_date:
+                                # Set start time to beginning of day
+                                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                                # Set end time to end of day
+                                end_date = start_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                                # Convert to ISO format
+                                start_iso = start_date.isoformat()
+                                end_iso = end_date.isoformat()
+                                args = {"time_range": f"{start_iso},{end_iso}"}
+                            else:
+                                raise ValueError(f"Could not parse date range: {args}")
+                    except Exception as e:
+                        logger.error(f"Error parsing time range: {e}")
+                        raise ValueError(f"Invalid time range format: {args}")
+                elif tool_name == "delete_calendar_event":
+                    args = {"event_id": args.strip('"')}
+                else:
+                    args = {}
 
-            # Execute the appropriate tool with normalized arguments
-            if tool_name == "get_calendar_events":
-                return await self.calendar_service.get_events()
+            if tool_name == "list_calendar_events":
+                return await self.calendar_service.list_events()
             elif tool_name == "create_calendar_event":
-                return await self.calendar_service.write_event(normalized_args)
-            elif tool_name == "resolve_calendar_conflict":
-                return await self.calendar_service.resolve_conflict(normalized_args)
+                # Format event details properly
+                event_details = {
+                    "summary": args.get("summary", "Workout session"),
+                    "start": {
+                        "dateTime": args.get("start_time", (datetime.now() + timedelta(days=1)).replace(hour=14, minute=0, second=0, microsecond=0).isoformat()),
+                        "timeZone": "America/New_York"
+                    },
+                    "end": {
+                        "dateTime": args.get("end_time", (datetime.now() + timedelta(days=1)).replace(hour=15, minute=0, second=0, microsecond=0).isoformat()),
+                        "timeZone": "America/New_York"
+                    }
+                }
+                return await self.calendar_service.write_event(event_details)
+            elif tool_name == "delete_calendar_event":
+                # Delete a single event by ID
+                event_id = args.get("event_id")
+                if not event_id:
+                    raise ValueError("event_id is required for delete_calendar_event")
+                return await self.calendar_service.delete_event(event_id)
             elif tool_name == "delete_events_in_range":
-                return await self.calendar_service.delete_events_in_range(normalized_args["time_range"])
+                # Delete all events in a time range
+                time_range = args.get("time_range")
+                if not time_range:
+                    raise ValueError("time_range is required for delete_events_in_range")
+                return await self.calendar_service.delete_events_in_range(time_range)
             elif tool_name == "send_email":
                 return await self.gmail_service.send_email(
-                    normalized_args["recipient"],
-                    normalized_args["subject"],
-                    normalized_args["body"]
+                    args.get("to", ""),
+                    args.get("subject", ""),
+                    args.get("body", "")
                 )
-            elif tool_name == "create_task":
-                return await self.tasks_service.create_task(normalized_args["task_details"])
-            elif tool_name == "get_tasks":
-                return await self.tasks_service.get_tasks(normalized_args.get("filter"))
-            elif tool_name == "search_drive":
-                return await self.drive_service.search_files(normalized_args["query"])
-            elif tool_name == "get_sheet_data":
-                return await self.sheets_service.get_sheet_data(normalized_args["sheet_id"])
-            elif tool_name == "get_directions":
-                return await self.maps_service.get_directions(normalized_args["directions_request"])
-            elif tool_name == "find_nearby_workout_locations":
-                return await self.maps_service.find_nearby_workout_locations(normalized_args["location"])
+            elif tool_name == "list_emails":
+                return await self.gmail_service.list_emails(
+                    args.get("max_results", 10)
+                )
+            elif tool_name == "read_email":
+                return await self.gmail_service.read_email(args.get("message_id", ""))
+            elif tool_name == "delete_email":
+                return await self.gmail_service.delete_email(args.get("message_id", ""))
+            elif tool_name == "search_emails":
+                return await self.gmail_service.search_emails(args.get("query", ""))
             else:
-                return f"Unknown tool: {tool_name}"
+                raise ValueError(f"Unknown tool: {tool_name}")
         except Exception as e:
-            logger.error(f"Error executing tool {tool_name}: {e}")
-            return f"Error executing {tool_name}: {str(e)}"
+            logger.error(f"Error executing tool {tool_name}: {str(e)}")
+            raise
 
     def _create_tools(self):
         """Create the tools for the agent."""
