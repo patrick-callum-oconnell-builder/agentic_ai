@@ -3,20 +3,10 @@ import Chat from './components/Chat';
 import './App.css';
 
 const KnowledgeGraphTab: React.FC = () => (
-  <div className="chat-container">
-    <div className="chat-header">
-      <div className="chat-header-profile" title="Knowledge Graph">KG</div>
-      <div className="chat-header-info">
-        <div className="chat-header-name">Knowledge Graph</div>
-        <div className="chat-header-status">
-          <span className="chat-header-status-dot" style={{ background: '#888' }}></span>
-          Data Visualization
-        </div>
-      </div>
-    </div>
-    <div className="chat-messages" style={{ textAlign: 'center', padding: '2rem', color: '#888' }}>
-      <h2>Knowledge Graph</h2>
-      <p>This is where the knowledge graph visualization or data will appear.</p>
+  <div className="kg-graph-area">
+    {/* The entire area is now dedicated to the knowledge graph visualization */}
+    <div className="kg-placeholder">
+      Knowledge Graph Visualization Area
     </div>
   </div>
 );
