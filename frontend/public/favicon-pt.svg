@@ -1,0 +1,10 @@
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <circle cx="32" cy="32" r="32" fill="url(#bluegrey)"/>
+  <defs>
+    <linearGradient id="bluegrey" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#b0e0e6"/>
+      <stop offset="1" stop-color="#4682b4"/>
+    </linearGradient>
+  </defs>
+  <text x="50%" y="54%" text-anchor="middle" fill="#fff" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="bold" dy=".1em">PT</text>
+</svg> 
