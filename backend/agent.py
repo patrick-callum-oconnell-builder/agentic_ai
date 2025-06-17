@@ -407,6 +407,15 @@ class PersonalTrainerAgent:
                 input_text = str(history)
                 chat_history = []
             
+            # Preference detection (integrated)
+            preference = await self.extract_preference_llm(input_text)
+            if preference:
+                return {
+                    "type": "tool_call",
+                    "tool": "add_preference_to_kg",
+                    "args": preference
+                }
+
             # Get current time and date
             current_time = datetime.now().strftime("%I:%M %p")
             current_date = datetime.now().strftime("%A, %B %d, %Y")
@@ -652,17 +661,6 @@ When the user asks to schedule a workout:
         tool_result = None
         last_tool = None
 
-        # LLM-based preference extraction and tool call
-        if hasattr(user_input, 'content'):
-            user_text = user_input.content
-        else:
-            user_text = str(user_input)
-        preference = await self.extract_preference_llm(user_text)
-        if preference:
-            # Call the add_preference_to_kg tool
-            pref_result = add_preference_to_kg(preference)
-            responses.append(f"I've added your preference: {preference} to your knowledge graph.")
-
         while state != "DONE":
             print(f"Current state: {state}")
             if state == "AGENT_THINKING":
@@ -888,6 +886,17 @@ Please provide the action statement:"""
             tool = next((t for t in self.tools if t.name == tool_name), None)
             if not tool:
                 raise ValueError(f"Tool {tool_name} not found")
+
+            # Special handling for add_preference_to_kg
+            if tool_name == "add_preference_to_kg":
+                # If args is a dict with 'query', extract the value
+                if isinstance(args, dict) and 'query' in args:
+                    arg_val = args['query']
+                else:
+                    arg_val = args
+                result = await tool.func(arg_val) if asyncio.iscoroutinefunction(tool.func) else tool.func(arg_val)
+                logger.info(f"Tool {tool_name} returned: {result}")
+                return result
 
             # Convert string args to dict if needed
             if isinstance(args, str):
