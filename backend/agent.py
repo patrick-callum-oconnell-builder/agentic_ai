@@ -209,16 +209,22 @@ class PersonalTrainerAgent:
             else:
                 input_text = str(history)
                 chat_history = []
-
-            # Create the system prompt with tool descriptions
-            tool_descriptions = []
-            for tool in self.tools:
-                tool_descriptions.append(f"- {tool.name}: {tool.description}")
             
-            system_prompt = f"""You are a personal trainer AI assistant. Your goal is to help users achieve their fitness goals.
+            # Create the system prompt with tool descriptions
+            system_prompt = """You are a personal trainer AI assistant. Your goal is to help users achieve their fitness goals.
 
 You have access to the following tools:
-{chr(10).join(tool_descriptions)}
+- get_calendar_events: Get upcoming calendar events
+- create_calendar_event: Create a new calendar event
+- resolve_calendar_conflict: Resolve calendar conflicts by replacing, deleting, or skipping conflicting events
+- delete_events_in_range: Delete all calendar events within a specified time range
+- send_email: Send an email
+- create_task: Create a new task
+- get_tasks: Get tasks
+- search_drive: Search Google Drive files
+- get_sheet_data: Get data from a Google Sheet
+- get_directions: Get directions between two locations
+- find_nearby_workout_locations: Find nearby workout locations (gyms, fitness centers, etc.) near a given location
 
 When a user asks for something that requires using a tool, respond with:
 TOOL_CALL: <tool_name> <tool_arguments>
@@ -230,10 +236,11 @@ For example:
 - If they ask to delete events in a time range: TOOL_CALL: delete_events_in_range "2024-03-20T00:00:00Z|2024-03-21T00:00:00Z"
   Note: The time range should be in ISO format with UTC timezone (Z suffix), separated by a pipe character (|)
 
-IMPORTANT:
-- The most recent message in the conversation history is the user's current request and should be prioritized when deciding how to respond or which tool to call.
-- Use the timestamps in the conversation history to understand the order and recency of messages, but always focus on the latest message for the user's intent.
-- Use the rest of the conversation history for context, but do not let older messages override the user's most recent request.
+CRITICAL INSTRUCTION:
+- ALWAYS prioritize the user's most recent message and ignore any conflicting older messages.
+- The most recent message in the conversation history is the ONLY message that matters for determining the user's current request.
+- Older messages should only be used for context if they don't conflict with the current request.
+- If the most recent message asks for something different from previous messages, completely ignore the previous messages.
 
 IMPORTANT CALENDAR CONFLICT HANDLING:
 When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
@@ -242,12 +249,12 @@ When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
    - "skip": Don't create the new event
    - "replace": Delete all conflicting events and create the new one
    - "delete": Delete the first conflicting event and create the new one
-3. Use the resolve_calendar_conflict tool with their choice: TOOL_CALL: resolve_calendar_conflict '{{"event_details": {{...}}, "action": "skip"}}'
+3. Use the resolve_calendar_conflict tool with their choice: TOOL_CALL: resolve_calendar_conflict '{"event_details": {...}, "action": "skip"}'
 
 If they don't need a tool, just respond normally with helpful, encouraging fitness advice.
 
 Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""
-
+            
             # Prepare the messages for the LLM
             messages = [SystemMessage(content=system_prompt)]
             
@@ -665,66 +672,98 @@ Example output:
                 "location": "Gym"
             })
 
-    async def _execute_tool(self, tool_name, tool_input):
-        """Execute a tool with the given input."""
+    async def _execute_tool(self, tool_name: str, args: Union[str, Dict[str, Any]]) -> Any:
+        """Execute a tool with the given arguments.
+        
+        Args:
+            tool_name: Name of the tool to execute
+            args: Either a string or dictionary containing the tool arguments
+            
+        Returns:
+            The result of the tool execution
+        """
         try:
-            # Convert tool_input to dict if needed for create_calendar_event
-            if tool_name == "create_calendar_event" and isinstance(tool_input, str):
-                try:
-                    # Use the LLM to convert natural language to event dict (returns JSON string)
-                    tool_input = await self._convert_natural_language_to_calendar_json(tool_input)
-                    # Parse the JSON string to a Python dict
-                    tool_input = json.loads(tool_input)
-                    # Ensure start and end are RFC3339 (with timezone)
-                    for time_field in ["start", "end"]:
-                        if time_field in tool_input and isinstance(tool_input[time_field], str):
-                            # If no timezone info, append 'Z' for UTC
-                            if "T" in tool_input[time_field] and not (tool_input[time_field].endswith("Z") or "+" in tool_input[time_field]):
-                                tool_input[time_field] += "Z"
-                            # Wrap as dict for Google Calendar API
-                            tool_input[time_field] = {"dateTime": tool_input[time_field], "timeZone": "UTC"}
-                except Exception as e:
-                    logger.error(f"Failed to convert event description: {e}")
-                    raise
-            if tool_name == "get_calendar_events":
-                return await self.calendar_service.get_upcoming_events(tool_input)
-            elif tool_name == "create_calendar_event":
-                return await self.calendar_service.write_event(tool_input)
-            elif tool_name == "resolve_calendar_conflict":
-                return await self._resolve_calendar_conflict(tool_input)
-            elif tool_name == "delete_events_in_range":
-                # Parse the time range string (format: "start_time|end_time")
-                if isinstance(tool_input, str):
-                    # Remove any extra quotes from the input
-                    tool_input = tool_input.strip('"')
-                    start_time, end_time = tool_input.split('|')
-                    return await self.calendar_service.delete_events_in_range(start_time, end_time)
-                else:
-                    # Handle dictionary input
-                    start_time = tool_input.get('start_time')
-                    end_time = tool_input.get('end_time')
-                    if not start_time or not end_time:
-                        raise ValueError("Both start_time and end_time are required")
-                    return await self.calendar_service.delete_events_in_range(start_time, end_time)
-            elif tool_name == "send_email":
-                return await self.gmail_service.send_message(tool_input)
-            elif tool_name == "create_task":
-                return await self.tasks_service.create_task(tool_input)
-            elif tool_name == "get_tasks":
-                return await self.tasks_service.get_tasks(tool_input)
-            elif tool_name == "search_drive":
-                return await self.drive_service.list_files(tool_input)
-            elif tool_name == "get_sheet_data":
-                return await self.sheets_service.get_sheet_data(tool_input)
-            elif tool_name == "get_directions" and self.maps_service:
-                return await self.maps_service.get_directions(tool_input)
-            elif tool_name == "find_nearby_workout_locations" and self.maps_service:
-                return await self.maps_service.find_nearby_workout_locations(tool_input)
+            # Normalize args to dictionary format
+            normalized_args = {}
+            if isinstance(args, str):
+                if tool_name == "create_calendar_event":
+                    try:
+                        normalized_args = json.loads(args)
+                    except json.JSONDecodeError:
+                        # If not JSON, treat as a simple string description
+                        normalized_args = {
+                            "summary": args,
+                            "description": args,
+                            "start": {
+                                "dateTime": (datetime.now() + timedelta(days=1)).isoformat(),
+                                "timeZone": "UTC"
+                            },
+                            "end": {
+                                "dateTime": (datetime.now() + timedelta(days=1, hours=1)).isoformat(),
+                                "timeZone": "UTC"
+                            }
+                        }
+                elif tool_name == "resolve_calendar_conflict":
+                    try:
+                        normalized_args = json.loads(args)
+                    except json.JSONDecodeError:
+                        return "Error: Invalid conflict details format"
+                elif tool_name == "delete_events_in_range":
+                    normalized_args = {"time_range": args}
+                elif tool_name == "send_email":
+                    recipient, subject, body = args.split("|", 2)
+                    normalized_args = {
+                        "recipient": recipient,
+                        "subject": subject,
+                        "body": body
+                    }
+                elif tool_name == "create_task":
+                    normalized_args = {"task_details": args}
+                elif tool_name == "get_tasks":
+                    normalized_args = {"filter": args}
+                elif tool_name == "search_drive":
+                    normalized_args = {"query": args}
+                elif tool_name == "get_sheet_data":
+                    normalized_args = {"sheet_id": args}
+                elif tool_name == "get_directions":
+                    normalized_args = {"directions_request": args}
+                elif tool_name == "find_nearby_workout_locations":
+                    normalized_args = {"location": args}
             else:
-                raise ValueError(f"Unknown tool: {tool_name}")
+                normalized_args = args
+
+            # Execute the appropriate tool with normalized arguments
+            if tool_name == "get_calendar_events":
+                return await self.calendar_service.get_events()
+            elif tool_name == "create_calendar_event":
+                return await self.calendar_service.write_event(normalized_args)
+            elif tool_name == "resolve_calendar_conflict":
+                return await self.calendar_service.resolve_conflict(normalized_args)
+            elif tool_name == "delete_events_in_range":
+                return await self.calendar_service.delete_events_in_range(normalized_args["time_range"])
+            elif tool_name == "send_email":
+                return await self.gmail_service.send_email(
+                    normalized_args["recipient"],
+                    normalized_args["subject"],
+                    normalized_args["body"]
+                )
+            elif tool_name == "create_task":
+                return await self.tasks_service.create_task(normalized_args["task_details"])
+            elif tool_name == "get_tasks":
+                return await self.tasks_service.get_tasks(normalized_args.get("filter"))
+            elif tool_name == "search_drive":
+                return await self.drive_service.search_files(normalized_args["query"])
+            elif tool_name == "get_sheet_data":
+                return await self.sheets_service.get_sheet_data(normalized_args["sheet_id"])
+            elif tool_name == "get_directions":
+                return await self.maps_service.get_directions(normalized_args["directions_request"])
+            elif tool_name == "find_nearby_workout_locations":
+                return await self.maps_service.find_nearby_workout_locations(normalized_args["location"])
+            else:
+                return f"Unknown tool: {tool_name}"
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")
-            raise
+            return f"Error executing {tool_name}: {str(e)}"
 
     def _create_tools(self):
         """Create the tools for the agent."""
@@ -771,7 +810,7 @@ Example output:
             tools.extend([
                 Tool(
                     name="search_drive",
-                    func=self.drive_service.list_files,
+                    func=self.drive_service.search_files,
                     description="Search for files in Google Drive"
                 )
             ])
