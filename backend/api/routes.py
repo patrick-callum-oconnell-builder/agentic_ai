@@ -286,4 +286,5 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks, x
 @router.get("/knowledge-graph")
 def get_knowledge_graph():
     kg = KnowledgeGraph()  # Loads from file if exists
+    logging.getLogger(__name__).info(f"/knowledge-graph API called. Entities: {list(kg.entity_map.keys())}")
     return kg.to_dict() 

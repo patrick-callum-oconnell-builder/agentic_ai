@@ -82,9 +82,13 @@ class KnowledgeGraph:
         self.root_person: Optional[str] = None
         self.patterns = self.ENTITY_PATTERNS.copy()
         self.relationship_indicators = self.RELATIONSHIP_INDICATORS.copy()
-        # Always rebuild from prompt
-        self.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
-        self.save_to_file()
+        if os.path.exists(self.KG_FILE):
+            self.load_from_file()
+            logger.info(f"KnowledgeGraph loaded from file: {self.KG_FILE}")
+        else:
+            self.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
+            self.save_to_file()
+            logger.info("KnowledgeGraph initialized from prompt and saved to file.")
         
     def save_to_file(self):
         """Persist the KG to a file as JSON."""
@@ -98,6 +102,25 @@ class KnowledgeGraph:
         }
         with open(self.KG_FILE, 'w') as f:
             json.dump(data, f)
+        logger.info(f"KnowledgeGraph saved to file: {self.KG_FILE}")
+
+    def load_from_file(self):
+        """Load the KG from a file."""
+        with open(self.KG_FILE, 'r') as f:
+            data = json.load(f)
+        self.entity_map = {k: Entity(id=k, type=v['type'], attributes=v['attributes']) for k, v in data['entities'].items()}
+        self.relation_map = {}
+        self.graph = nx.DiGraph()
+        for k, entity in self.entity_map.items():
+            self.graph.add_node(k, **{"type": entity.type, **entity.attributes})
+        for rel in data['relations']:
+            relation = Relation(source=rel['source'], target=rel['target'], type=rel['type'], attributes=rel['attributes'])
+            key = (rel['source'], rel['target'], rel['type'])
+            self.relation_map[key] = relation
+            self.graph.add_edge(rel['source'], rel['target'], **{"type": rel['type'], **rel['attributes']})
+        self.root_person = data.get('root_person')
+        logger.info(f"KnowledgeGraph loaded entities: {list(self.entity_map.keys())}")
+        logger.info(f"KnowledgeGraph loaded relations: {len(self.relation_map)} relations")
 
     def parse_prompt(self, prompt: str) -> None:
         """Parse the prompt and construct the knowledge graph."""

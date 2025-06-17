@@ -23,7 +23,11 @@ interface GraphData {
   links: Link[];
 }
 
-const KnowledgeGraph: React.FC = () => {
+interface KnowledgeGraphProps {
+  refresh: number;
+}
+
+const KnowledgeGraph: React.FC<KnowledgeGraphProps> = ({ refresh }) => {
   const [data, setData] = useState<GraphData>({ nodes: [], links: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -32,6 +36,8 @@ const KnowledgeGraph: React.FC = () => {
   const fgRef = useRef<any>(null);
 
   useEffect(() => {
+    setLoading(true);
+    console.log('[KG] Fetching knowledge graph from backend...');
     fetch('http://localhost:8000/api/knowledge-graph')
       .then(res => {
         if (!res.ok) throw new Error('Failed to fetch knowledge graph');
@@ -51,12 +57,13 @@ const KnowledgeGraph: React.FC = () => {
         }));
         setData({ nodes, links });
         setLoading(false);
+        console.log(`[KG] Rendered with nodes:`, nodes.map(n => n.id));
       })
       .catch(err => {
         setError(err.message);
         setLoading(false);
       });
-  }, []);
+  }, [refresh]);
 
   useEffect(() => {
     function updateSize() {

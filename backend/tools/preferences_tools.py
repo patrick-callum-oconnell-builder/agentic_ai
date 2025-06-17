@@ -1,5 +1,6 @@
 from backend.knowledge_graph import KnowledgeGraph, KNOWLEDGE_GRAPH_PROMPT
 import json
+import logging
 
 def add_preference_to_kg(preference, user_name: str = None):
     """Add a preference to the knowledge graph.
@@ -8,8 +9,8 @@ def add_preference_to_kg(preference, user_name: str = None):
         preference: Either a string preference, a dict, or a JSON string containing preference details
         user_name: Optional user name to connect the preference to
     """
-    kg = KnowledgeGraph()
-    kg.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)  # In production, load the current KG state
+    kg = KnowledgeGraph()  # Now loads from file if exists
+    # Do NOT call parse_prompt here!
     
     if user_name is None:
         user_name = kg.root_person
@@ -52,6 +53,6 @@ def add_preference_to_kg(preference, user_name: str = None):
     # Add the preference to the KG
     kg._add_entity("PREFERENCE", preference, {"type": "like", "source": "user"})
     kg._add_relation(user_name, preference, "LIKES")
-    
-    # In production, save the updated KG state
+    kg.save_to_file()
+    logging.getLogger(__name__).info(f"Preference '{preference}' added to KG for user '{user_name}'")
     return {"status": "success", "preference": preference} 

@@ -7,9 +7,10 @@ import { Message } from '../App';
 interface ChatProps {
   messages: Message[];
   setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  onPreferenceAdded?: () => void;
 }
 
-const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
+const Chat: React.FC<ChatProps> = ({ messages, setMessages, onPreferenceAdded }) => {
   const [input, setInput] = React.useState('');
   const [isLoading, setIsLoading] = React.useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -70,7 +71,11 @@ const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
             try {
               const parsed = JSON.parse(data);
               if (parsed.response) {
-                // Always create a new message
+                // Add logging for preference detection
+                if (onPreferenceAdded && typeof parsed.response === 'string' && parsed.response.toLowerCase().includes('added your preference')) {
+                  console.log('[Chat] Detected preference added in assistant response, triggering KG refresh.');
+                  onPreferenceAdded();
+                }
                 setMessages(prev => [...prev, {
                   role: 'assistant',
                   content: parsed.response,
