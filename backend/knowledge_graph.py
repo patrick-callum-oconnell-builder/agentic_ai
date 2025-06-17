@@ -74,16 +74,25 @@ class KnowledgeGraph:
         self.relation_map: Dict[Tuple[str, str, str], Relation] = {}
         self.entity_types: Set[str] = set()
         self.relation_types: Set[str] = set()
+        self.root_person: Optional[str] = None  # Store the user's name
         
     def parse_prompt(self, prompt: str) -> None:
         """Parse the prompt and construct the knowledge graph."""
         # Split into sentences and clean them
         sentences = [s.strip() for s in prompt.split('.') if s.strip()]
         
-        # First pass: identify entities and their types
+        # First pass: identify entities and their types, and extract root person
         for sentence in sentences:
             self._extract_entities(sentence)
-            
+            # Try to extract the user's name as root
+            if self.root_person is None:
+                match = re.search(r"name is ([\w'\- ]+)", sentence, re.IGNORECASE)
+                if match:
+                    self.root_person = match.group(1).strip()
+        # Ensure the root person node is always present
+        if self.root_person and self.root_person not in self.entity_map:
+            self._add_entity("PERSON", self.root_person, {"type": "user", "source": "root"})
+        
         # Second pass: establish relationships
         for sentence in sentences:
             self._extract_relationships(sentence)
@@ -116,14 +125,15 @@ class KnowledgeGraph:
                 matches = pattern.pattern.finditer(sentence)
                 for match in matches:
                     if len(match.groups()) == 1:
-                        # Single entity relationship
                         entity_value = match.group(1).strip()
-                        # Try to find a subject in the context
-                        subject = self._find_subject_in_context(sentence[:sentence.lower().find(match.group(0))])
+                        # Use root_person as subject if sentence is about 'I', 'my', or 'me'
+                        if self._is_first_person(sentence) and self.root_person:
+                            subject = self.root_person
+                        else:
+                            subject = self._find_subject_in_context(sentence[:sentence.lower().find(match.group(0))])
                         if subject:
                             self._add_relation(subject, entity_value, pattern.relation_type)
                     elif len(match.groups()) == 2:
-                        # Two entity relationship
                         entity1 = match.group(1).strip()
                         entity2 = match.group(2).strip()
                         self._add_relation(entity1, entity2, pattern.relation_type)
@@ -133,18 +143,20 @@ class KnowledgeGraph:
         for i, word in enumerate(words):
             if word in self.RELATIONSHIP_INDICATORS:
                 relation_type = self.RELATIONSHIP_INDICATORS[word]
-                
-                # Try to find entities before and after the relationship indicator
                 if i > 0 and i < len(words) - 1:
-                    # Look for known entities in the context
                     source_entities = self._find_entities_in_context(sentence[:sentence.lower().find(word)])
                     target_entities = self._find_entities_in_context(sentence[sentence.lower().find(word) + len(word):])
-                    
-                    # Create relationships between found entities
+                    # If first person and no explicit source, use root_person
+                    if self._is_first_person(sentence) and self.root_person and not source_entities:
+                        source_entities = [self.root_person]
                     for source in source_entities:
                         for target in target_entities:
                             self._add_relation(source, target, relation_type)
-                            
+    
+    def _is_first_person(self, sentence: str) -> bool:
+        """Check if the sentence is about the first person (I, my, me)."""
+        return bool(re.search(r"\b(I|my|me|mine)\b", sentence, re.IGNORECASE))
+        
     def _find_subject_in_context(self, context: str) -> Optional[str]:
         """Find the subject of a sentence in the given context."""
         # Look for the first person entity in the context
