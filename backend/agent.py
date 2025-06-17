@@ -28,6 +28,7 @@ import pytz
 import dateparser
 from datetime import timezone as dt_timezone
 from langchain.schema import BaseMessage
+import re
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -71,12 +72,133 @@ When creating calendar events, if you receive a "CONFLICT_DETECTED" response:
    - "delete": Delete the first conflicting event and create the new one
 3. Use the resolve_calendar_conflict tool with their choice
 
-Always be professional, encouraging, and focused on helping the user achieve their fitness goals."""
+Always be professional, encouraging, and focused on helping the user achieve their fitness goals.
+
+IMPORTANT RULES:
+1. ONLY use tools when explicitly needed for the user's request
+2. For calendar events:
+   - ONLY use create_calendar_event when the user explicitly wants to schedule something
+   - ONLY use get_calendar_events when the user asks to see their schedule
+   - ONLY use delete_events_in_range when the user wants to clear their calendar
+   - If the user asks to see their schedule, list events only for the requested time frame (e.g., 'this week', 'next week', 'today'). Do NOT schedule a new event unless explicitly requested.
+3. For emails:
+   - ONLY use send_email when the user wants to send a message
+4. For tasks:
+   - ONLY use create_task when the user wants to create a task
+5. For location searches:
+   - ONLY use search_location when the user wants to find a place
+6. For sheets:
+   - ONLY use create_workout_tracker when the user wants to create a new workout tracking spreadsheet
+   - ONLY use add_workout_entry when the user wants to log a workout
+   - ONLY use add_nutrition_entry when the user wants to log nutrition information
+   - ONLY use get_sheet_data when the user wants to view sheet data
+
+When using tools:
+1. For calendar events:
+   - Use create_calendar_event with a JSON object containing:
+     - summary: Event title
+     - start: Object with dateTime and timeZone
+     - end: Object with dateTime and timeZone
+     - description: Event details
+     - location: Event location
+   - Use get_calendar_events with an empty string to list events
+   - Use delete_events_in_range with start_time|end_time format
+2. For emails:
+   - Use send_email with recipient|subject|body format
+3. For tasks:
+   - Use create_task with task_name|due_date format
+4. For location searches:
+   - Use search_location with location|query format
+   - Use find_nearby_workout_locations with location|radius format
+     Example: find_nearby_workout_locations: "One Infinite Loop, Cupertino, CA 95014|30"
+5. For sheets:
+   - Use create_workout_tracker with title format
+   - Use add_workout_entry with spreadsheet_id|date|workout_type|duration|calories|notes format
+   - Use add_nutrition_entry with spreadsheet_id|date|meal|calories|protein|carbs|fat|notes format
+   - Use get_sheet_data with spreadsheet_id|range_name format
+
+Example tool calls:
+- create_calendar_event: {{"summary": "Upper Body Workout", "start": {{"dateTime": "2025-06-18T10:00:00-07:00", "timeZone": "America/Los_Angeles"}}, "end": {{"dateTime": "2025-06-18T11:00:00-07:00", "timeZone": "America/Los_Angeles"}}, "description": "Focus on chest and shoulders", "location": "Gym"}}
+- get_calendar_events: ""
+- delete_events_in_range: "2025-06-18T00:00:00-07:00|2025-06-18T23:59:59-07:00"
+- send_email: "coach@gym.com|Weekly Progress Update|Here's your progress report..."
+- create_task: "Track protein intake|2025-06-21"
+- search_location: "San Francisco|gym"
+- create_workout_tracker: "My Workout Tracker"
+- add_workout_entry: "spreadsheet_id|2025-06-17|Upper Body|60|300|Focus on chest and shoulders"
+- add_nutrition_entry: "spreadsheet_id|2025-06-17|Lunch|500|30|50|20|Post-workout meal"
+- get_sheet_data: "spreadsheet_id|Workouts!A1:E10"
+
+IMPORTANT: Only use tools when explicitly needed for the user's request. Do not make unnecessary tool calls.
+
+When the user asks to schedule a workout:
+1. ALWAYS use create_calendar_event with a properly formatted JSON object
+2. ALWAYS include timeZone in the start and end times
+3. ALWAYS set the end time to be 1 hour after the start time unless specified otherwise
+4. ALWAYS include a descriptive summary and location
+5. ALWAYS use the format: TOOL_CALL: create_calendar_event {{"summary": "...", "start": {{"dateTime": "...", "timeZone": "..."}}, "end": {{"dateTime": "...", "timeZone": "..."}}, "description": "...", "location": "..."}}"""
 
 class FindNearbyWorkoutLocationsInput(BaseModel):
     lat: float = Field(..., description="Latitude of the location")
     lng: float = Field(..., description="Longitude of the location")
     radius: int = Field(5000, description="Search radius in meters (default 5000)")
+
+# Helper function to extract time frame from user message
+async def extract_timeframe(text: str) -> Optional[Dict[str, str]]:
+    """Extract timeframe from text using LLM and return timeMin and timeMax in ISO format."""
+    try:
+        messages = [
+            SystemMessage(content="""You are a helpful assistant that extracts timeframes from text. 
+            Return ONLY the timeframe in a standardized format, or 'None' if no timeframe is found.
+            Valid timeframes are: 'this week', 'next week', 'today', 'tomorrow', or a day of the week.
+            Do not include any explanation or additional text."""),
+            HumanMessage(content=f"Extract the timeframe from this text: {text}")
+        ]
+        response = await self.llm.ainvoke(messages)
+        timeframe = response.content.strip().lower()
+        
+        # Get current time in UTC
+        now = datetime.now(dt_timezone.utc)
+        
+        # Convert timeframe to timeMin and timeMax
+        if timeframe == 'this week':
+            # Set time_min to start of current week (Monday)
+            start_of_week = now - timedelta(days=now.weekday())
+            start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Set time_max to end of week (Sunday)
+            end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            return {
+                'timeMin': start_of_week.isoformat(),
+                'timeMax': end_of_week.isoformat()
+            }
+        elif timeframe == 'next week':
+            # Set time_min to start of next week (Monday)
+            start_of_week = now - timedelta(days=now.weekday()) + timedelta(days=7)
+            start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+            # Set time_max to end of next week (Sunday)
+            end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            return {
+                'timeMin': start_of_week.isoformat(),
+                'timeMax': end_of_week.isoformat()
+            }
+        elif timeframe == 'today':
+            start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
+            return {
+                'timeMin': start_of_day.isoformat(),
+                'timeMax': end_of_day.isoformat()
+            }
+        elif timeframe == 'tomorrow':
+            start_of_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
+            return {
+                'timeMin': start_of_day.isoformat(),
+                'timeMax': end_of_day.isoformat()
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error extracting timeframe: {e}")
+        return None
 
 class PersonalTrainerAgent:
     """
@@ -301,6 +423,7 @@ IMPORTANT RULES:
    - ONLY use create_calendar_event when the user explicitly wants to schedule something
    - ONLY use get_calendar_events when the user asks to see their schedule
    - ONLY use delete_events_in_range when the user wants to clear their calendar
+   - If the user asks to see their schedule, list events only for the requested time frame (e.g., 'this week', 'next week', 'today'). Do NOT schedule a new event unless explicitly requested.
 3. For emails:
    - ONLY use send_email when the user wants to send a message
 4. For tasks:
@@ -383,12 +506,17 @@ When the user asks to schedule a workout:
             
             # Check if the response contains a tool call
             if "TOOL_CALL:" in response_text:
-                # Parse the tool call
                 tool_call_line = response_text.split("TOOL_CALL:")[1].strip().split("\n")[0]
                 parts = tool_call_line.split(" ", 1)
                 if len(parts) >= 2:
                     tool_name = parts[0].strip().rstrip(":")
                     tool_args = parts[1].strip()
+                    # If get_calendar_events, override args with timeframe if present in user message
+                    if tool_name == "get_calendar_events":
+                        timeframe = await extract_timeframe(input_text)
+                        if timeframe:
+                            tool_args = f'"{timeframe}"'
+                    logger.info(f"[TOOL_CALL] Tool selected: {tool_name}, Args: {tool_args}")
                     return {
                         "type": "tool_call",
                         "tool": tool_name,
@@ -555,44 +683,29 @@ When the user asks to schedule a workout:
     async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
         """Get a confirmation message for a tool call."""
         try:
-            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
-
-Tool arguments: {args}
-
-Please provide a natural, conversational response that:
-1. For calendar events:
-   - Mention the event title, time, and that you'll provide a link
-   - Include specific details about the workout type and focus
-   - Mention that you'll share a calendar link once it's created
-   - Example: "I'll schedule your Upper Body Workout for tomorrow at 10 AM, focusing on chest and shoulders. Once it's set up, I'll share a link so you can view all the details in your calendar."
-2. For calendar deletions:
-   - Be brief and direct
-   - Just confirm what time period you'll be clearing
-   - Don't ask for confirmation
-   - Example: "I'll clear your calendar for March 20th."
-3. For emails:
-   - Mention the recipient and subject
-   - Example: "I'll send an email to Coach Sarah (sarah@gym.com) with your latest progress report, titled 'Weekly Progress Update - Strength Gains'."
-4. For tasks:
-   - Mention the task name and due date
-   - Example: "I'll create a task to track your daily protein intake (target: 150g) that will be due this Friday."
-5. For location searches:
-   - Mention the location and what you're looking for
-   - Example: "I'll search for gyms and fitness centers near your current location."
-6. Avoid using technical terms or mentioning the tool name
-7. Be encouraging and helpful
-8. NEVER use generic responses like "I'll add that to your calendar" or "Your workout has been scheduled"
-9. Always include specific details from the request
-
-Please provide a natural, detailed response:"""
-
+            # Special handling for get_calendar_events: always return a concise, context-aware message
+            if tool_name == "get_calendar_events":
+                # Try to extract the time frame from args
+                timeframe = None
+                if args:
+                    # Remove quotes if present
+                    arg_str = args.strip('"')
+                    # Only use if it matches a known time frame
+                    for pattern in TIMEFRAME_PATTERNS:
+                        if re.search(pattern, arg_str, re.IGNORECASE):
+                            timeframe = pattern
+                            break
+                if timeframe:
+                    return f"Checking your calendar for events {timeframe}..."
+                else:
+                    return "Checking your calendar for upcoming events..."
+            # Default: use LLM for other tools
+            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.\n\nTool arguments: {args}\n\nPlease provide a natural, conversational response that is concise and context-appropriate."""
             response = await self.llm.ainvoke(prompt)
-            if not response or not hasattr(response, 'content') or not response.content.strip():
-                raise RuntimeError("LLM returned empty response")
-            return response.content.strip()
+            return response.content.strip() if hasattr(response, 'content') else str(response)
         except Exception as e:
-            logger.error(f"Error getting LLM confirmation message: {e}")
-            raise
+            logger.error(f"Error generating tool confirmation message: {e}")
+            return "I'm processing your request..."
 
     async def process_messages(self, messages: List[BaseMessage]) -> str:
         """Process a list of messages and return a response as a string."""
@@ -739,17 +852,27 @@ Please provide a natural, detailed response:"""
                     raise ValueError(f"LLM did not return valid JSON for event. LLM output: {last_json_string}")
 
     async def _execute_tool(self, tool_name: str, args: Union[str, Dict[str, Any]]) -> Any:
-        """Execute a tool and return its result."""
+        """Execute a tool with the given arguments."""
         try:
-            # Find the matching tool
+            # Find the tool
             tool = next((t for t in self.tools if t.name == tool_name), None)
             if not tool:
-                raise ValueError(f"Unknown tool: {tool_name}")
+                raise ValueError(f"Tool {tool_name} not found")
 
             # Convert string args to dict if needed
             if isinstance(args, str):
+                # Special handling for get_calendar_events
+                if tool_name == "get_calendar_events":
+                    # Extract time frame from the user's query
+                    timeframe = await extract_timeframe(args)
+                    if timeframe:
+                        # Override the args with the extracted time frame
+                        args = timeframe
+                    else:
+                        # Default to upcoming events if no time frame specified
+                        args = {"timeMin": datetime.now(dt_timezone.utc).isoformat()}
                 # Special handling for delete_events_in_range
-                if tool_name == "delete_events_in_range":
+                elif tool_name == "delete_events_in_range":
                     # Parse pipe-separated format: start_time|end_time
                     parts = args.strip('"').split("|")
                     if len(parts) >= 2:
@@ -1162,6 +1285,19 @@ Please provide a natural, detailed response:"""
             if json.dumps(tool_result, default=str) in summary:
                 raise RuntimeError("LLM returned raw tool result instead of a summary")
             
+            # If get_calendar_events and summary does not mention any event titles, fall back to default event list
+            if tool_name == "get_calendar_events":
+                event_titles = [event.get('summary', '') for event in tool_result if isinstance(event, dict)]
+                if not any(title in summary for title in event_titles):
+                    # Fallback: list the events
+                    if not event_titles:
+                        return "You have no upcoming events in the requested time frame."
+                    events = []
+                    for event in tool_result:
+                        start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', ''))
+                        summary_title = event.get('summary', 'Untitled Event')
+                        events.append(f"- {summary_title} at {start}")
+                    return "Here are your upcoming events in the requested time frame:\n" + "\n".join(events)
             return summary
 
         except Exception as e:
@@ -1170,7 +1306,11 @@ Please provide a natural, detailed response:"""
             if tool_name == "create_calendar_event":
                 return "I've scheduled your workout in your calendar. You can check your calendar app for the details."
             elif tool_name == "get_calendar_events":
-                return "I've checked your calendar for upcoming events. You can view them in your calendar app."
+                query = args.get('query', '')
+                if query and ('week' in query.lower() or 'coming week' in query.lower()):
+                    return f"I'll list your events for the coming week."
+                else:
+                    return "I'll list your upcoming events."
             elif tool_name == "find_nearby_workout_locations":
                 if not tool_result:
                     return "I couldn't find any workout locations nearby."
@@ -1187,4 +1327,49 @@ Please provide a natural, detailed response:"""
                 return "I've cleared your calendar for the specified time period."
             else:
                 return f"I've completed your request. You can check the details in your {tool_name.replace('_', ' ')}."
+
+    def _extract_timeframe(self, query: str) -> Optional[Dict[str, str]]:
+        """Extract time frame from user query and return timeMin and timeMax in ISO format."""
+        try:
+            now = datetime.now(dt_timezone.utc)
+            
+            # Common time frame patterns
+            if 'this week' in query.lower():
+                # Set time_min to start of current week (Monday)
+                start_of_week = now - timedelta(days=now.weekday())
+                start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Set time_max to end of week (Sunday)
+                end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+                return {
+                    'timeMin': start_of_week.isoformat(),
+                    'timeMax': end_of_week.isoformat()
+                }
+            elif 'next week' in query.lower():
+                # Set time_min to start of next week (Monday)
+                start_of_week = now - timedelta(days=now.weekday()) + timedelta(days=7)
+                start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
+                # Set time_max to end of next week (Sunday)
+                end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+                return {
+                    'timeMin': start_of_week.isoformat(),
+                    'timeMax': end_of_week.isoformat()
+                }
+            elif 'today' in query.lower():
+                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
+                return {
+                    'timeMin': start_of_day.isoformat(),
+                    'timeMax': end_of_day.isoformat()
+                }
+            elif 'tomorrow' in query.lower():
+                start_of_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
+                return {
+                    'timeMin': start_of_day.isoformat(),
+                    'timeMax': end_of_day.isoformat()
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Error extracting time frame: {e}")
+            return None
 
