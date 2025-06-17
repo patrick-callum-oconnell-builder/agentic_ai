@@ -5,6 +5,10 @@ interface Node {
   id: string;
   type: string;
   attributes: Record<string, any>;
+  fx?: number;
+  fy?: number;
+  x?: number;
+  y?: number;
 }
 
 interface Link {
@@ -69,8 +73,24 @@ const KnowledgeGraph: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (fgRef.current) {
-      fgRef.current.d3Force('link')?.distance(120);
+    if (fgRef.current && dimensions.width && dimensions.height) {
+      // Set the simulation center to the center of the canvas
+      fgRef.current.d3Force('center').x(dimensions.width / 2).y(dimensions.height / 2);
+    }
+  }, [dimensions]);
+
+  useEffect(() => {
+    if (fgRef.current && data.nodes.length && dimensions.width && dimensions.height) {
+      setTimeout(() => {
+        const validNodes = data.nodes.filter(n => typeof n.x === 'number' && typeof n.y === 'number');
+        if (validNodes.length > 0) {
+          const avgX = validNodes.reduce((sum, n) => sum + (n.x ?? 0), 0) / validNodes.length;
+          const avgY = validNodes.reduce((sum, n) => sum + (n.y ?? 0), 0) / validNodes.length;
+          fgRef.current.centerAt(avgX, avgY, 600);
+          fgRef.current.zoom(1, 600);
+        }
+        fgRef.current.d3Force('link')?.distance(120);
+      }, 600);
     }
   }, [dimensions, data]);
 
