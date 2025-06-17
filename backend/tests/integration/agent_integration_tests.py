@@ -21,7 +21,7 @@ from backend.google_services.sheets import GoogleSheetsService
 from backend.google_services.maps import GoogleMapsService
 
 class TestAgentIntegration(unittest.TestCase):
-    def setUp(self):
+    async def asyncSetUp(self):
         """Set up test fixtures before each test method."""
         load_dotenv()
         
@@ -38,11 +38,15 @@ class TestAgentIntegration(unittest.TestCase):
             sheets_service=GoogleSheetsService(),
             maps_service=GoogleMapsService(api_key=maps_api_key)
         )
+        await self.agent.async_init()
+
+    def setUp(self):
+        """Synchronous wrapper for async setup."""
+        asyncio.run(self.asyncSetUp())
 
     @pytest.mark.asyncio
     async def test_basic_greeting(self):
         """Test that the agent can handle a basic greeting without errors."""
-        await self.agent.async_init()
         messages = [{"role": "user", "content": "Hi, how are you?"}]
         response = await self.agent.process_messages(messages)
         print(f"Agent response: {response}")
@@ -55,7 +59,6 @@ class TestAgentIntegration(unittest.TestCase):
     @pytest.mark.asyncio
     async def test_no_tool_call_on_greeting(self):
         """Test that a simple greeting does not trigger a tool call and returns a direct LLM response."""
-        await self.agent.async_init()
         messages = [{"role": "user", "content": "hello"}]
         response = await self.agent.process_messages(messages)
         print(f"Agent response: {response}")
@@ -85,7 +88,7 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertIsNotNone(response)
         self.assertIsInstance(response, str)
         self.assertTrue(len(response) > 0)
-        events = self.agent.calendar_service.get_events_for_date(datetime.now().date())
+        events = await self.agent.calendar_service.get_events_for_date(datetime.now().date())
         self.assertTrue(len(events) > 0)
         workout_event = None
         for event in events:
@@ -104,7 +107,7 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertIsInstance(response, str)
         self.assertTrue(len(response) > 0)
         self.assertTrue("time" in response.lower() or "when" in response.lower())
-        events = self.agent.calendar_service.get_events_for_date(datetime.now().date())
+        events = await self.agent.calendar_service.get_events_for_date(datetime.now().date())
         for event in events:
             self.assertNotEqual(event["summary"], "Evening Workout")
 
@@ -117,7 +120,7 @@ class TestAgentIntegration(unittest.TestCase):
         self.assertIsInstance(response, str)
         self.assertTrue(len(response) > 0)
         self.assertTrue("time" in response.lower() or "format" in response.lower())
-        events = self.agent.calendar_service.get_events_for_date(datetime.now().date())
+        events = await self.agent.calendar_service.get_events_for_date(datetime.now().date())
         for event in events:
             self.assertNotEqual(event["summary"], "Evening Workout")
 

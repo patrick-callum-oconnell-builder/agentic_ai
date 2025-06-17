@@ -30,7 +30,8 @@ def kill_process_on_port(port: int) -> None:
         logger.debug(f"Checking for processes on port {port}")
         # Get all processes using the port
         cmd = f"lsof -i :{port} -t"
-        pids = subprocess.check_output(cmd, shell=True).decode().strip().split('\n')
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        pids = result.stdout.strip().split('\n')
         logger.debug(f"Found processes on port {port}: {pids}")
         
         for pid in pids:
@@ -45,8 +46,16 @@ def kill_process_on_port(port: int) -> None:
                 except (ValueError, ProcessLookupError) as e:
                     logger.warning(f"Failed to kill process {pid}: {str(e)}")
                     continue
-    except subprocess.CalledProcessError:
-        logger.debug(f"No processes found on port {port}")
+        
+        # Add a small delay to ensure processes are fully terminated
+        time.sleep(1)
+        
+        # Verify the port is free
+        verify_result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        if verify_result.stdout.strip():
+            logger.warning(f"Port {port} is still in use after killing processes")
+        else:
+            logger.debug(f"Port {port} is now free")
     except Exception as e:
         logger.error(f"Error killing processes on port {port}: {str(e)}")
         logger.debug(traceback.format_exc())

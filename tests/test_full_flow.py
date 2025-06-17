@@ -1,229 +1,116 @@
 import subprocess
 import time
-import httpx
-import pytest
-import logging
 import os
 import sys
-import threading
-import queue
-import json
 import signal
-import psutil
-import asyncio
-from contextlib import asynccontextmanager
+import pytest
+import httpx
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
-# Configure logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Helper to start a process
+def start_process(cmd, cwd=None):
+    print(f"Starting process: {' '.join(cmd)} in {cwd or os.getcwd()}")
+    return subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, preexec_fn=os.setsid, text=True)
 
-def kill_process_tree(pid):
-    """Kill a process and all its children."""
-    try:
-        parent = psutil.Process(pid)
-        children = parent.children(recursive=True)
-        for child in children:
-            child.terminate()
-        parent.terminate()
-        gone, still_alive = psutil.wait_procs(children + [parent], timeout=3)
-        for p in still_alive:
-            p.kill()
-    except psutil.NoSuchProcess:
-        pass
-
-async def wait_for_server(url: str, max_retries: int = 60, retry_interval: float = 1.0) -> bool:
-    """Wait for the server to be ready by checking the health endpoint."""
-    for i in range(max_retries):
+# Helper to stop a process
+def stop_process(proc):
+    if proc:
         try:
-            logger.debug(f"Attempting to connect to {url} (attempt {i + 1}/{max_retries})")
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(url)
-                if response.status_code == 200:
-                    logger.info(f"Server is ready at {url}")
-                    return True
-        except httpx.ConnectError as e:
-            logger.debug(f"Connection error on attempt {i + 1}/{max_retries}: {str(e)}")
-            await asyncio.sleep(retry_interval)
-        except httpx.TimeoutException as e:
-            logger.debug(f"Timeout on attempt {i + 1}/{max_retries}: {str(e)}")
-            await asyncio.sleep(retry_interval)
-        except Exception as e:
-            logger.debug(f"Unexpected error on attempt {i + 1}/{max_retries}: {str(e)}")
-            await asyncio.sleep(retry_interval)
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            proc.wait(timeout=10)
+        except Exception:
+            proc.kill()
+
+# Wait for a server to be ready
+def wait_for_server(url, timeout=60, proc=None):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            r = httpx.get(url, timeout=2)
+            if r.status_code == 200:
+                print(f"Server ready at {url}")
+                return True
+        except Exception:
+            pass
+        # Print process output if available
+        if proc and proc.stdout:
+            try:
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    print(f"[proc output] {line.strip()}")
+            except Exception:
+                pass
+        time.sleep(1)
+    print(f"Timeout waiting for {url}")
     return False
 
-def read_output(process, output_queue):
-    """Read process output and put it in a queue."""
-    for line in iter(process.stdout.readline, ''):
-        output_queue.put(line.strip())
-    process.stdout.close()
-
-async def run_with_timeout(coro, timeout_seconds: float):
-    """Run a coroutine with a timeout."""
+@pytest.mark.asyncio
+async def test_full_flow_ui():
+    import asyncio
     try:
-        return await asyncio.wait_for(coro, timeout=timeout_seconds)
+        await asyncio.wait_for(_test_full_flow_ui(), timeout=60)
     except asyncio.TimeoutError:
-        logger.error(f"Operation timed out after {timeout_seconds} seconds")
-        raise TimeoutError(f"Operation timed out after {timeout_seconds} seconds")
+        assert False, "Test timed out after 60 seconds"
 
-@pytest.mark.asyncio
-async def test_full_flow_greeting():
-    """Test the full flow of running both frontend and backend and sending a greeting."""
-    async def run_test():
-        logger.info("Starting servers...")
-        process = None
-        output_queue = None
+def print_proc_output(proc, label):
+    if proc and proc.stdout:
+        print(f"--- {label} output ---")
         try:
-            # Get the project root directory (one level up from the test file)
-            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            os.chdir(project_root)
-            logger.info(f"Working directory set to: {os.getcwd()}")
+            for line in proc.stdout:
+                print(line.strip())
+        except Exception:
+            pass
+        print(f"--- end {label} output ---")
 
-            # Install the backend package in development mode
-            logger.info("Installing backend package in development mode...")
-            install_process = subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-e", "."],
-                capture_output=True,
-                text=True
-            )
-            if install_process.returncode != 0:
-                logger.error(f"Failed to install backend package: {install_process.stderr}")
-                logger.debug(f"Install process stdout: {install_process.stdout}")
-                raise RuntimeError("Failed to install backend package")
-
-            process = subprocess.Popen(
-                ["python", "run.py"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,  # Line buffered
-                preexec_fn=os.setsid  # Create new process group
-            )
-            
-            # Create a queue for process output
-            output_queue = queue.Queue()
-            
-            # Start a thread to read the output
-            output_thread = threading.Thread(target=read_output, args=(process, output_queue))
-            output_thread.daemon = True
-            output_thread.start()
-            
-            # Print any output while waiting for server
-            logger.info("Waiting for backend server to be ready...")
-            server_ready = await wait_for_server("http://localhost:8000/api/health")
-            
-            if not server_ready:
-                raise TimeoutError("Server failed to start within timeout period")
-            
-            # Wait a bit for the agent to initialize
-            await asyncio.sleep(2)
-            
-            logger.info("Sending greeting to agent...")
-            async with httpx.AsyncClient(base_url="http://localhost:8000", timeout=30.0) as client:
-                # First, check if the agent is ready
-                try:
-                    health_response = await client.get("/api/health")
-                    assert health_response.status_code == 200, "Health check failed"
-                except Exception as e:
-                    logger.error(f"Health check failed: {str(e)}")
-                    raise
-                
-                # Send the greeting
-                payload = {"messages": [{"role": "user", "content": "Hi, how are you?"}]}
-                try:
-                    response = await client.post("/api/chat", json=payload)
-                    await asyncio.sleep(1)  # Allow backend logs to flush
-                    # Print all backend output after the chat request
-                    if output_queue:
-                        try:
-                            while True:
-                                line = output_queue.get_nowait()
-                                print(f"Final server output: {line}")
-                        except queue.Empty:
-                            pass
-                    if response.status_code != 200:
-                        error_detail = response.text
-                        logger.error(f"Error response from server: {error_detail}")
-                        try:
-                            error_json = response.json()
-                            logger.error(f"Error JSON: {json.dumps(error_json, indent=2)}")
-                        except:
-                            pass
-                    assert response.status_code == 200, f"Unexpected status code: {response.status_code}"
-                    data = response.json()
-                    agent_response = data.get("response", "")
-                    logger.info(f"Agent response: {agent_response}")
-                    assert isinstance(agent_response, str)
-                    assert len(agent_response) > 0
-                    assert "error" not in agent_response.lower(), "Response should not contain the word 'error'"
-                except Exception as e:
-                    logger.error(f"Error during chat request: {str(e)}")
-                    raise
-        finally:
-            logger.info("Terminating servers...")
-            if process:
-                try:
-                    # Kill the entire process group
-                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning("Process did not terminate gracefully, forcing...")
-                    os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-                    process.wait()
-                except Exception as e:
-                    logger.error(f"Error terminating process: {str(e)}")
-                    # Fallback to psutil if os.killpg fails
-                    kill_process_tree(process.pid)
-            
-            # Print any remaining output
-            if output_queue:
-                try:
-                    while True:
-                        line = output_queue.get_nowait()
-                        print(f"Final server output: {line}")
-                except queue.Empty:
-                    pass
-
-    # Run the test with a 60-second timeout
-    await run_with_timeout(run_test(), 60.0)
-
-@pytest.mark.asyncio
-async def test_backend_health():
-    """Test starting only the backend server and hitting the /api/health endpoint."""
-    logger.info("Starting backend server only...")
-    process = subprocess.Popen(
-        [sys.executable, "-m", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1
-    )
+async def _test_full_flow_ui():
+    backend_proc = None
+    frontend_proc = None
+    driver = None
     try:
-        logger.info("Waiting for backend server to be ready...")
-        if not wait_for_server("http://localhost:8000/api/health"):
-            logger.error("Backend server failed to start")
-            raise Exception("Backend server failed to start")
-        logger.info("Backend server is up. Hitting /api/health endpoint...")
-        async with httpx.AsyncClient(base_url="http://localhost:8000") as client:
-            response = await client.get("/api/health")
-            assert response.status_code == 200, f"Unexpected status code: {response.status_code}"
-            data = response.json()
-            logger.info(f"Health endpoint response: {data}")
-            assert data.get("status") == "healthy"
+        print("[DEBUG] Starting backend server...")
+        backend_proc = start_process([sys.executable, "run.py"], cwd=os.path.dirname(os.path.abspath(__file__)) + "/..")
+        if not wait_for_server("http://localhost:8000/api/health", proc=backend_proc):
+            print_proc_output(backend_proc, "backend")
+            assert False, "Backend did not start"
+
+        print("[DEBUG] Starting frontend server...")
+        frontend_proc = start_process(["npm", "run", "start"], cwd="frontend")
+        if not wait_for_server("http://localhost:3000", proc=frontend_proc):
+            print_proc_output(frontend_proc, "frontend")
+            assert False, "Frontend did not start"
+
+        print("[DEBUG] Starting Selenium ChromeDriver...")
+        chrome_options = Options()
+        chrome_options.add_argument("--headless=new")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        driver = webdriver.Chrome(options=chrome_options)
+        driver.get("http://localhost:3000")
+
+        print("[DEBUG] Waiting for input box...")
+        input_box = WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.TAG_NAME, "input"))
+        )
+        print("[DEBUG] Sending message to agent...")
+        input_box.send_keys("Hello, agent!" + Keys.RETURN)
+
+        print("[DEBUG] Waiting for agent response in UI...")
+        response_elem = WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, ".assistant-message"))
+        )
+        response_text = response_elem.text.strip()
+        print(f"[DEBUG] Agent response: {response_text}")
+        assert response_text, "No response from agent"
+        assert "error" not in response_text.lower(), f"Agent response contains error: {response_text}"
     finally:
-        logger.info("Terminating backend server...")
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            logger.warning("Process did not terminate gracefully, forcing...")
-            process.kill()
-            process.wait()
-        output = process.stdout.read()
-        if output:
-            logger.debug("Backend server output:")
-            for line in output.splitlines():
-                logger.debug(f"  {line}") 
+        if driver:
+            driver.quit()
+        stop_process(frontend_proc)
+        stop_process(backend_proc) 

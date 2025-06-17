@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from typing import Optional, List
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -20,17 +21,17 @@ class GoogleServiceBase(ABC):
         logger.debug("GoogleServiceBase initialized")
 
     @abstractmethod
-    def initialize_service(self):
+    async def initialize_service(self):
         """Initialize the Google service."""
         pass
 
-    def authenticate(self):
+    async def authenticate(self):
         """Authenticate with Google API."""
         try:
             logger.info("Authenticating with Google API...")
             self.creds = get_google_credentials()
             logger.debug("Credentials obtained successfully")
-            self.service = self.initialize_service()
+            self.service = await self.initialize_service()
             logger.info("Service initialized successfully")
         except Exception as e:
             logger.error(f"Failed to authenticate with Google API: {str(e)}", exc_info=True)

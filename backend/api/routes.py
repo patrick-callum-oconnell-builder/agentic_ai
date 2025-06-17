@@ -36,8 +36,14 @@ async def initialize_services():
     global calendar_service, gmail_service, maps_service, fitness_service, tasks_service, drive_service, sheets_service
     try:
         logger.info("Initializing Google services...")
+        
+        # Initialize calendar service
         calendar_service = GoogleCalendarService()
+        await calendar_service.initialize_service()
+        
+        # Initialize gmail service
         gmail_service = GoogleGmailService()
+        await gmail_service.initialize_service()
         
         # Get the Google Maps API key from environment variables
         maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
@@ -45,10 +51,22 @@ async def initialize_services():
             raise ValueError("Missing required environment variable: GOOGLE_MAPS_API_KEY")
         maps_service = GoogleMapsService(api_key=maps_api_key)
         
+        # Initialize fitness service
         fitness_service = GoogleFitnessService()
+        await fitness_service.initialize_service()
+        
+        # Initialize tasks service
         tasks_service = GoogleTasksService()
+        await tasks_service.initialize_service()
+        
+        # Initialize drive service
         drive_service = GoogleDriveService()
+        await drive_service.initialize_service()
+        
+        # Initialize sheets service
         sheets_service = GoogleSheetsService()
+        await sheets_service.initialize_service()
+        
         logger.info("All Google services initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize services: {str(e)}")
@@ -134,7 +152,7 @@ async def get_calendar_events():
     """Get upcoming calendar events."""
     logger.info("Calendar events endpoint called")
     try:
-        events = calendar_service.get_upcoming_events()
+        events = await calendar_service.get_upcoming_events()
         logger.info(f"Retrieved {len(events)} calendar events")
         return {"events": events}
     except Exception as e:
@@ -146,7 +164,7 @@ async def get_recent_emails():
     """Get recent emails."""
     logger.info("Recent emails endpoint called")
     try:
-        emails = gmail_service.get_recent_emails()
+        emails = await gmail_service.get_recent_emails()
         logger.info(f"Retrieved {len(emails)} recent emails")
         return {"emails": emails}
     except Exception as e:
@@ -158,7 +176,7 @@ async def get_nearby_locations():
     """Get nearby workout locations."""
     logger.info("Nearby locations endpoint called")
     try:
-        locations = maps_service.find_nearby_workout_locations()
+        locations = await maps_service.find_nearby_workout_locations("San Francisco")
         logger.info(f"Retrieved {len(locations)} nearby locations")
         return {"locations": locations}
     except Exception as e:
@@ -170,7 +188,7 @@ async def get_fitness_activities():
     """Get fitness activities."""
     logger.info("Fitness activities endpoint called")
     try:
-        activities = fitness_service.get_activities()
+        activities = await fitness_service.get_activities()
         logger.info(f"Retrieved {len(activities)} fitness activities")
         return {"activities": activities}
     except Exception as e:
@@ -182,7 +200,7 @@ async def get_tasks():
     """Get tasks."""
     logger.info("Tasks endpoint called")
     try:
-        tasks = tasks_service.get_tasks()
+        tasks = await tasks_service.get_tasks()
         logger.info(f"Retrieved {len(tasks)} tasks")
         return {"tasks": tasks}
     except Exception as e:

@@ -8,6 +8,7 @@ from typing import List, Dict, Any, Optional
 import logging
 from backend.google_services.base import GoogleServiceBase
 from backend.google_services.auth import get_google_credentials
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -17,17 +18,11 @@ class GoogleDriveService(GoogleServiceBase):
     def __init__(self):
         """Initialize the Google Drive service."""
         self.SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
-        self.creds = None
-        self.service = self.initialize_service()
+        super().__init__()
         
-    def initialize_service(self):
+    async def initialize_service(self):
         """Initialize the Google Drive service using the new OAuth flow."""
-        self.creds = get_google_credentials()
         return build('drive', 'v3', credentials=self.creds)
-        
-    def authenticate(self):
-        # Already authenticated in base class
-        pass
         
     def list_files(self, query: str = '', max_results: int = 10) -> List[Dict]:
         """
@@ -52,48 +47,39 @@ class GoogleDriveService(GoogleServiceBase):
             logger.error(f"Error listing files: {e}")
             raise
             
-    def get_file(self, file_id: str) -> Dict:
-        """
-        Get a specific file by ID.
-        
-        Args:
-            file_id (str): ID of the file to retrieve
-            
-        Returns:
-            Dict: File metadata
-        """
+    async def get_file(self, file_id: str) -> Dict:
+        """Asynchronously get a specific file by ID."""
         try:
-            file = self.service.files().get(
-                fileId=file_id,
-                fields="id, name, mimeType, size, createdTime, modifiedTime"
-            ).execute()
-            
-            return file
+            def fetch_file():
+                return self.service.files().get(
+                    fileId=file_id,
+                    fields="id, name, mimeType, size, createdTime, modifiedTime"
+                ).execute()
+            return await asyncio.to_thread(fetch_file)
         except Exception as e:
             logger.error(f"Error getting file: {e}")
             raise
             
-    def create_folder(self, folder_name: str) -> Dict[str, Any]:
-        """Create a folder in Google Drive."""
+    async def create_folder(self, folder_name: str) -> Dict[str, Any]:
+        """Asynchronously create a folder in Google Drive."""
         try:
-            folder_metadata = {
-                'name': folder_name,
-                'mimeType': 'application/vnd.google-apps.folder'
-            }
-            folder = self.service.files().create(
-                body=folder_metadata,
-                fields='id'
-            ).execute()
-            return folder
+            def create():
+                folder_metadata = {
+                    'name': folder_name,
+                    'mimeType': 'application/vnd.google-apps.folder'
+                }
+                return self.service.files().create(
+                    body=folder_metadata,
+                    fields='id'
+                ).execute()
+            return await asyncio.to_thread(create)
         except Exception as e:
             logger.error(f"Error creating folder: {e}")
             return {}
             
-    def create_workout_folder(self, name: str = 'Workout Plans', parent_id: Optional[str] = None) -> Dict:
-        """
-        Alias for create_folder to create a workout folder. Default name is 'Workout Plans'.
-        """
-        return self.create_folder(name=name)
+    async def create_workout_folder(self, name: str = 'Workout Plans', parent_id: Optional[str] = None) -> Dict:
+        """Asynchronously create a workout folder. Default name is 'Workout Plans'."""
+        return await self.create_folder(name=name)
             
     def upload_file(self, file_path: str, name: Optional[str] = None, parent_id: Optional[str] = None) -> Dict:
         """
@@ -138,15 +124,16 @@ class GoogleDriveService(GoogleServiceBase):
             logger.error(f"Error deleting file: {e}")
             raise
 
-    def get_recent_files(self, max_results: int = 10) -> List[Dict[str, Any]]:
+    async def get_recent_files(self, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Asynchronously get recent files from Google Drive."""
         try:
-            results = self.service.files().list(
-                pageSize=max_results,
-                orderBy='modifiedTime desc',
-                fields='files(id, name, mimeType, modifiedTime)'
-            ).execute()
-            
-            return results.get('files', [])
+            def fetch():
+                results = self.service.files().list(
+                    pageSize=max_results,
+                    fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)"
+                ).execute()
+                return results.get('files', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
-            logger.error(f"Error fetching recent files: {e}")
-            return [] 
+            logger.error(f"Error getting recent files: {e}")
+            raise 

@@ -4,7 +4,7 @@ import json
 import logging
 import asyncio
 import ast
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Any, Optional, TypedDict, Annotated, Sequence, Union
 from pydantic.v1 import BaseModel, Field
 from dotenv import load_dotenv
@@ -24,6 +24,7 @@ from backend.google_services.maps import GoogleMapsService
 from langchain.agents import AgentExecutor
 from langchain.agents import ZeroShotAgent
 from langchain.chains import LLMChain
+import pytz
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -392,6 +393,85 @@ Always be professional, encouraging, and focused on helping the user achieve the
         tool_input = output_str[input_start:input_end]
         return tool_name, tool_input
 
+    async def _convert_natural_language_to_calendar_json(self, natural_language_input: str) -> str:
+        """Convert natural language input to JSON format for calendar events using LLM."""
+        try:
+            # Get current date/time information
+            now = datetime.now()
+            current_year = now.year
+            current_month = now.month
+            current_day = now.day
+            tomorrow = now + timedelta(days=1)
+            tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+            
+            # Create a prompt to convert natural language to JSON
+            conversion_prompt = f"""Convert the following natural language description into a JSON object for creating a calendar event.
+
+Natural language input: "{natural_language_input}"
+
+Current date context:
+- Today is {now.strftime('%Y-%m-%d')} ({now.strftime('%A')})
+- Tomorrow is {tomorrow_str} ({tomorrow.strftime('%A')})
+- Current time is {now.strftime('%H:%M')}
+
+Requirements:
+- summary: A short, descriptive title for the event
+- start: Start time in ISO format (YYYY-MM-DDTHH:MM:SS) - use current year ({current_year})
+- end: End time in ISO format (YYYY-MM-DDTHH:MM:SS) - typically 1 hour after start unless specified
+- description: A brief description of the event (optional)
+- location: Location of the event (optional)
+
+Rules:
+- If no specific time is mentioned, default to 6:00 PM tomorrow
+- If no duration is mentioned, default to 1 hour
+- Use tomorrow's date if "tomorrow" is mentioned
+- Use today's date if "today" is mentioned
+- For workout events, use appropriate fitness-related descriptions
+- Always use the current year ({current_year}) unless a specific year is mentioned
+- Use 24-hour format for times
+
+Return ONLY the JSON object, no additional text or explanation.
+
+Example output:
+{{"summary": "Workout Session", "start": "{tomorrow_str}T18:00:00", "end": "{tomorrow_str}T19:00:00", "description": "Fitness workout session", "location": "Gym"}}"""
+
+            # Use the LLM to convert the input
+            messages = [
+                SystemMessage(content="You are a helpful assistant that converts natural language to JSON format for calendar events. Always return valid JSON only."),
+                HumanMessage(content=conversion_prompt)
+            ]
+            
+            response = await self.llm.ainvoke(messages)
+            json_string = response.content.strip()
+            
+            # Validate that the response is valid JSON
+            try:
+                json.loads(json_string)
+                return json_string
+            except json.JSONDecodeError:
+                # If the response isn't valid JSON, try to extract JSON from it
+                import re
+                json_match = re.search(r'\{.*\}', json_string, re.DOTALL)
+                if json_match:
+                    extracted_json = json_match.group(0)
+                    json.loads(extracted_json)  # Validate
+                    return extracted_json
+                else:
+                    raise ValueError("LLM response is not valid JSON")
+                    
+        except Exception as e:
+            logger.error(f"Error converting natural language to JSON: {e}")
+            # Return a fallback JSON with default values using actual current date
+            tomorrow = datetime.now() + timedelta(days=1)
+            tomorrow_str = tomorrow.strftime("%Y-%m-%d")
+            return json.dumps({
+                "summary": "Workout Session",
+                "start": f"{tomorrow_str}T18:00:00",
+                "end": f"{tomorrow_str}T19:00:00",
+                "description": "Fitness workout session",
+                "location": "Gym"
+            })
+
     async def _execute_tool(self, tool_name, tool_input):
         # Use a simple JSON parsing approach for testing
         if isinstance(tool_input, str) and tool_input.strip().startswith('{'):
@@ -411,7 +491,25 @@ Always be professional, encouraging, and focused on helping the user achieve the
         if tool_name == "get_calendar_events":
             return await self.calendar_service.get_upcoming_events(tool_input)
         elif tool_name == "create_calendar_event":
-            return await self.calendar_service.write_event(tool_input)
+            # Convert natural language to JSON if it's not already JSON
+            if isinstance(tool_input, str) and not tool_input.strip().startswith('{'):
+                logger.info(f"Converting natural language to JSON: {tool_input}")
+                json_input = await self._convert_natural_language_to_calendar_json(tool_input)
+                logger.info(f"Converted to JSON: {json_input}")
+                # Parse the JSON string into a dictionary
+                event_details = json.loads(json_input)
+                # Convert ISO strings to Google Calendar format
+                event_details = self._convert_to_calendar_format(event_details)
+                return await self.calendar_service.write_event(event_details)
+            else:
+                # If it's already JSON, parse it into a dictionary
+                if isinstance(tool_input, str):
+                    event_details = json.loads(tool_input)
+                else:
+                    event_details = tool_input
+                # Convert ISO strings to Google Calendar format
+                event_details = self._convert_to_calendar_format(event_details)
+                return await self.calendar_service.write_event(event_details)
         elif tool_name == "send_email":
             return await self.gmail_service.send_message(tool_input)
         elif tool_name == "create_task":
@@ -509,10 +607,9 @@ Always be professional, encouraging, and focused on helping the user achieve the
         logger.info(f"Created {len(tools)} tools for agent")
         return tools
 
-    def _handle_calendar_operations(self, operation_json):
+    async def _handle_calendar_operations(self, operation_json):
         """Handle all calendar operations through a single method."""
         logger.info(f"[GoogleCalendar] Received operation: {operation_json}")
-        
         # Parse operation JSON
         if not isinstance(operation_json, dict):
             try:
@@ -520,38 +617,34 @@ Always be professional, encouraging, and focused on helping the user achieve the
             except Exception as e:
                 logger.error(f"[GoogleCalendar] Could not parse operation_json: {e}")
                 return "Error: Invalid operation format"
-        
         action = operation_json.get("action")
         if not action:
             return "Error: Missing 'action' in calendar operation"
-        
         try:
             if action == "getUpcoming":
                 max_results = operation_json.get("maxResults", 10)
-                return self.calendar_service.get_upcoming_events(max_results)
-            
+                return await self.calendar_service.get_upcoming_events(max_results)
             elif action == "getForDate":
                 date = operation_json.get("date")
                 if not date:
                     return "Error: Missing 'date' for getForDate operation"
-                return self.calendar_service.get_events_for_date(date)
-            
+                return await self.calendar_service.get_events_for_date(date)
             elif action == "create":
                 event_details = {
                     "summary": operation_json.get("summary", "Workout"),
-                    "start": {"dateTime": operation_json.get("start")},
-                    "end": {"dateTime": operation_json.get("end")},
+                    "start": operation_json.get("start"),
+                    "end": operation_json.get("end"),
                     "description": operation_json.get("description", "General fitness workout."),
                     "location": operation_json.get("location", "Gym")
                 }
-                return self.calendar_service.write_event(event_details)
-            
+                # Convert to proper calendar format
+                event_details = self._convert_to_calendar_format(event_details)
+                return await self.calendar_service.write_event(event_details)
             elif action == "delete":
                 event_id = operation_json.get("eventId")
                 if not event_id:
                     return "Error: Missing 'eventId' for delete operation"
-                return self.calendar_service.delete_event(event_id)
-            
+                return await self.calendar_service.delete_event(event_id)
             else:
                 return f"Error: Unknown calendar action '{action}'"
         except Exception as e:
@@ -605,3 +698,42 @@ Always be professional, encouraging, and focused on helping the user achieve the
         """Get tomorrow's date in ISO format."""
         tomorrow = datetime.now() + timedelta(days=1)
         return tomorrow.strftime("%Y-%m-%d")
+
+    def _convert_to_calendar_format(self, event_details):
+        """Convert event details to Google Calendar format."""
+        converted = event_details.copy()
+        
+        # Get user timezone (default to Pacific Time)
+        user_tz = pytz.timezone('America/Los_Angeles')
+        
+        # Convert start time if it's a string
+        if 'start' in converted and isinstance(converted['start'], str):
+            # Parse the datetime string and add timezone
+            try:
+                dt = datetime.fromisoformat(converted['start'].replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = user_tz.localize(dt)
+                converted['start'] = {'dateTime': dt.isoformat()}
+            except ValueError:
+                # If parsing fails, try to add timezone to the string
+                if not converted['start'].endswith('Z') and '+' not in converted['start']:
+                    converted['start'] = {'dateTime': converted['start'] + '-08:00'}  # PST
+                else:
+                    converted['start'] = {'dateTime': converted['start']}
+        
+        # Convert end time if it's a string
+        if 'end' in converted and isinstance(converted['end'], str):
+            # Parse the datetime string and add timezone
+            try:
+                dt = datetime.fromisoformat(converted['end'].replace('Z', '+00:00'))
+                if dt.tzinfo is None:
+                    dt = user_tz.localize(dt)
+                converted['end'] = {'dateTime': dt.isoformat()}
+            except ValueError:
+                # If parsing fails, try to add timezone to the string
+                if not converted['end'].endswith('Z') and '+' not in converted['end']:
+                    converted['end'] = {'dateTime': converted['end'] + '-08:00'}  # PST
+                else:
+                    converted['end'] = {'dateTime': converted['end']}
+        
+        return converted

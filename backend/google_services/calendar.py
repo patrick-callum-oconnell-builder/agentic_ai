@@ -11,6 +11,7 @@ import dateparser
 import logging
 from backend.google_services.base import GoogleServiceBase
 from backend.google_services.auth import get_google_credentials
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -21,74 +22,63 @@ class GoogleCalendarService(GoogleServiceBase):
     def __init__(self):
         """Initialize the Calendar service."""
         self.SCOPES = ['https://www.googleapis.com/auth/calendar']
-        self.creds = None
-        self.service = self.initialize_service()
+        super().__init__()
+        # Note: initialize_service() is now async, but __init__ cannot be async
+        # We'll handle initialization in initialize_service instead
         self.user_tz = timezone('America/Los_Angeles')
 
-    def initialize_service(self):
+    async def initialize_service(self):
         """Initialize the Google Calendar service using the new OAuth flow."""
-        self.creds = get_google_credentials()
+        # Don't call authenticate() here - it's handled by the base class
+        # Just build and return the service
         return build('calendar', 'v3', credentials=self.creds)
 
-    def get_upcoming_events(self, query: str = None, max_results: int = 10) -> List[Dict[str, Any]]:
-        """
-        Get upcoming events from the user's calendar.
-        
-        Args:
-            query (str, optional): Natural language query (e.g., 'workouts this week')
-            max_results (int): Maximum number of events to return
-            
-        Returns:
-            List[Dict[str, Any]]: List of upcoming events
-        """
+    async def get_upcoming_events(self, query: str = None, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Asynchronously get upcoming events from the user's calendar."""
         try:
-            now = datetime.utcnow().isoformat() + 'Z'
-            time_min = now
-            time_max = None
+            def fetch():
+                now = datetime.utcnow().isoformat() + 'Z'
+                time_min = now
+                time_max = None
 
-            if query:
-                # Parse natural language query into a date range
-                parsed_date = dateparser.parse(query, settings={'PREFER_DATES_FROM': 'future'})
-                if parsed_date:
-                    time_min = parsed_date.isoformat() + 'Z'
-                    # If query is like 'this week', set time_max to end of week
-                    if 'week' in query.lower():
-                        time_max = (parsed_date + timedelta(days=7)).isoformat() + 'Z'
+                if query:
+                    # Parse natural language query into a date range
+                    parsed_date = dateparser.parse(query, settings={'PREFER_DATES_FROM': 'future'})
+                    if parsed_date:
+                        time_min = parsed_date.isoformat() + 'Z'
+                        # If query is like 'this week', set time_max to end of week
+                        if 'week' in query.lower():
+                            time_max = (parsed_date + timedelta(days=7)).isoformat() + 'Z'
 
-            events_result = self.service.events().list(
-                calendarId='primary',
-                timeMin=time_min,
-                timeMax=time_max,
-                maxResults=max_results,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-            return events_result.get('items', [])
+                events_result = self.service.events().list(
+                    calendarId='primary',
+                    timeMin=time_min,
+                    timeMax=time_max,
+                    maxResults=max_results,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                return events_result.get('items', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting upcoming events: {e}")
             raise
 
-    def get_events_for_date(self, date: str) -> List[Dict[str, Any]]:
-        """
-        Get events for a specific date.
-        
-        Args:
-            date (str): Date in YYYY-MM-DD format
-            
-        Returns:
-            List[Dict[str, Any]]: List of events for the date
-        """
+    async def get_events_for_date(self, date: str) -> List[Dict[str, Any]]:
+        """Asynchronously get events for a specific date."""
         try:
-            start_time = f"{date}T00:00:00Z"
-            end_time = f"{date}T23:59:59Z"
-            events_result = self.service.events().list(
-                calendarId='primary',
-                timeMin=start_time,
-                timeMax=end_time,
-                singleEvents=True,
-                orderBy='startTime'
-            ).execute()
-            return events_result.get('items', [])
+            def fetch():
+                start_time = f"{date}T00:00:00Z"
+                end_time = f"{date}T23:59:59Z"
+                events_result = self.service.events().list(
+                    calendarId='primary',
+                    timeMin=start_time,
+                    timeMax=end_time,
+                    singleEvents=True,
+                    orderBy='startTime'
+                ).execute()
+                return events_result.get('items', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting events for date: {e}")
             raise
@@ -126,41 +116,34 @@ class GoogleCalendarService(GoogleServiceBase):
             print(f"Error parsing datetime: {e}")
             raise ValueError(f"Invalid datetime string: {dt_str}")
 
-    def write_event(self, event_details: Dict[str, Any]) -> Dict[str, Any]:
+    async def write_event(self, event_details: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Create a new calendar event.
-        
+        Asynchronously create a new calendar event.
         Args:
             event_details (Dict[str, Any]): Event details including summary, start, end, etc.
-            
         Returns:
             Dict[str, Any]: Created event details
         """
         try:
             logger.info(f"Creating calendar event with details: {event_details}")
-            
-            # Validate required fields
             required_fields = ['summary', 'start', 'end']
             missing_fields = [field for field in required_fields if field not in event_details]
             if missing_fields:
                 raise ValueError(f"Missing required fields: {', '.join(missing_fields)}")
-            
-            # Ensure start and end times are properly formatted
             for time_field in ['start', 'end']:
                 if isinstance(event_details[time_field], dict):
                     if 'dateTime' not in event_details[time_field]:
                         raise ValueError(f"Missing dateTime in {time_field}")
                 else:
                     raise ValueError(f"Invalid {time_field} format")
-            
-            event = self.service.events().insert(
-                calendarId='primary',
-                body=event_details
-            ).execute()
-            
+            event = await asyncio.to_thread(
+                lambda: self.service.events().insert(
+                    calendarId='primary',
+                    body=event_details
+                ).execute()
+            )
             logger.info(f"Successfully created event: {event.get('id')}")
             return event
-            
         except ValueError as ve:
             logger.error(f"Validation error creating event: {ve}")
             raise
@@ -168,23 +151,20 @@ class GoogleCalendarService(GoogleServiceBase):
             logger.error(f"Error creating event: {str(e)}")
             raise
 
-    def authenticate(self):
-        """Authenticate with Google Calendar API."""
-        self.creds = get_google_credentials()
-        self.service = build('calendar', 'v3', credentials=self.creds)
-
-    def delete_event(self, event_id: str) -> None:
+    async def delete_event(self, event_id: str) -> None:
         """
-        Delete a calendar event by its ID.
+        Asynchronously delete a calendar event by its ID.
         Args:
             event_id (str): The ID of the event to delete.
         """
         try:
             logger.info(f"Deleting calendar event with ID: {event_id}")
-            self.service.events().delete(
-                calendarId='primary',
-                eventId=event_id
-            ).execute()
+            await asyncio.to_thread(
+                lambda: self.service.events().delete(
+                    calendarId='primary',
+                    eventId=event_id
+                ).execute()
+            )
             logger.info(f"Successfully deleted event: {event_id}")
         except Exception as e:
             logger.error(f"Error deleting event {event_id}: {e}")

@@ -9,6 +9,7 @@ import logging
 from backend.google_services.base import GoogleServiceBase
 from backend.google_services.auth import get_google_credentials
 from datetime import datetime, timedelta
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,10 @@ class GoogleSheetsService(GoogleServiceBase):
     def __init__(self):
         """Initialize the Sheets service."""
         self.SCOPES = ['https://www.googleapis.com/auth/spreadsheets']
-        self.creds = None
-        self.service = self.initialize_service()
+        super().__init__()
 
-    def initialize_service(self):
+    async def initialize_service(self):
         """Initialize the Google Sheets service using the new OAuth flow."""
-        self.creds = get_google_credentials()
         return build('sheets', 'v4', credentials=self.creds)
 
     def create_spreadsheet(self, title: str) -> Dict:
@@ -52,22 +51,14 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error creating spreadsheet: {e}")
             raise
             
-    def get_spreadsheet(self, spreadsheet_id: str) -> Dict:
-        """
-        Get a specific spreadsheet.
-        
-        Args:
-            spreadsheet_id (str): ID of the spreadsheet to retrieve
-            
-        Returns:
-            Dict: Spreadsheet metadata
-        """
+    async def get_spreadsheet(self, spreadsheet_id: str) -> Dict:
+        """Asynchronously get a specific spreadsheet."""
         try:
-            spreadsheet = self.service.spreadsheets().get(
-                spreadsheetId=spreadsheet_id
-            ).execute()
-            
-            return spreadsheet
+            def fetch():
+                return self.service.spreadsheets().get(
+                    spreadsheetId=spreadsheet_id
+                ).execute()
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting spreadsheet: {e}")
             raise
@@ -101,24 +92,16 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error updating values: {e}")
             raise
             
-    def get_values(self, spreadsheet_id: str, range_name: str) -> List[List[Any]]:
-        """
-        Get values from a spreadsheet.
-        
-        Args:
-            spreadsheet_id (str): ID of the spreadsheet
-            range_name (str): Range to read (e.g., 'Sheet1!A1:B2')
-            
-        Returns:
-            List[List[Any]]: Values from the range
-        """
+    async def get_values(self, spreadsheet_id: str, range_name: str) -> List[List[Any]]:
+        """Asynchronously get values from a specific range in a spreadsheet."""
         try:
-            result = self.service.spreadsheets().values().get(
-                spreadsheetId=spreadsheet_id,
-                range=range_name
-            ).execute()
-            
-            return result.get('values', [])
+            def fetch():
+                result = self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=range_name
+                ).execute()
+                return result.get('values', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting values: {e}")
             raise
@@ -286,34 +269,30 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error adding nutrition entry: {e}")
             raise
             
-    def get_workout_history(self, spreadsheet_id: str) -> List[List[str]]:
-        """
-        Get workout history from the tracker.
-        
-        Args:
-            spreadsheet_id (str): ID of the spreadsheet
-            
-        Returns:
-            List[List[str]]: Workout history
-        """
+    async def get_workout_history(self, spreadsheet_id: str) -> List[List[str]]:
+        """Asynchronously get workout history from the spreadsheet."""
         try:
-            return self.get_values(spreadsheet_id, 'Workouts!A2:E')
+            def fetch():
+                result = self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range='Workout History!A:Z'
+                ).execute()
+                return result.get('values', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting workout history: {e}")
             raise
             
-    def get_nutrition_history(self, spreadsheet_id: str) -> List[List[str]]:
-        """
-        Get nutrition history from the tracker.
-        
-        Args:
-            spreadsheet_id (str): ID of the spreadsheet
-            
-        Returns:
-            List[List[str]]: Nutrition history
-        """
+    async def get_nutrition_history(self, spreadsheet_id: str) -> List[List[str]]:
+        """Asynchronously get nutrition history from the spreadsheet."""
         try:
-            return self.get_values(spreadsheet_id, 'Nutrition!A2:G')
+            def fetch():
+                result = self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range='Nutrition History!A:Z'
+                ).execute()
+                return result.get('values', [])
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting nutrition history: {e}")
             raise
@@ -382,44 +361,26 @@ class GoogleSheetsService(GoogleServiceBase):
             logger.error(f"Error creating workout summary: {e}")
             raise
 
-    def authenticate(self):
-        # Already authenticated in base class
-        pass
-
-    def get_sheet_data(self, spreadsheet_id: str, range_name: str, query: str = None) -> List[List[Any]]:
-        """
-        Get data from a specific range in the spreadsheet.
-        
-        Args:
-            spreadsheet_id (str): ID of the spreadsheet
-            range_name (str): Range to read (e.g., 'Sheet1!A1:B2')
-            query (str, optional): Natural language query (e.g., 'this week', 'this month')
-            
-        Returns:
-            List[List[Any]]: Values from the range
-        """
+    async def get_sheet_data(self, spreadsheet_id: str, range_name: str, query: str = None) -> List[List[Any]]:
+        """Asynchronously get data from a Google Sheet with optional filtering."""
         try:
-            data = self.get_values(spreadsheet_id, range_name)
-            
-            if query and data:
-                # Assume first column is date
-                date_col_idx = 0
-                now = datetime.now()
+            def fetch():
+                result = self.service.spreadsheets().values().get(
+                    spreadsheetId=spreadsheet_id,
+                    range=range_name
+                ).execute()
+                values = result.get('values', [])
                 
-                if 'this week' in query.lower():
-                    start_date = now
-                    end_date = start_date + timedelta(days=7)
-                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
-                elif 'this month' in query.lower():
-                    start_date = now
-                    end_date = start_date + timedelta(days=30)
-                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
-                elif 'last month' in query.lower():
-                    end_date = now
-                    start_date = end_date - timedelta(days=30)
-                    data = [row for row in data if row[date_col_idx] and start_date <= datetime.strptime(row[date_col_idx], '%Y-%m-%d') <= end_date]
-            
-            return data
+                if query:
+                    # Simple filtering based on query
+                    filtered_values = []
+                    for row in values:
+                        if any(query.lower() in str(cell).lower() for cell in row):
+                            filtered_values.append(row)
+                    return filtered_values
+                
+                return values
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting sheet data: {e}")
             raise 

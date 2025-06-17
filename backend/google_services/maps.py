@@ -11,6 +11,7 @@ import logging
 import pickle
 from backend.google_services.base import GoogleAPIService
 from googlemaps import Client
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -105,26 +106,32 @@ class GoogleMapsService(GoogleAPIService):
             logger.error(f"Error finding nearby places: {str(e)}")
             return f"Error finding nearby places: {str(e)}"
 
-    def get_place_details(self, place_id: str) -> Dict:
-        """Get detailed information about a place."""
+    async def get_place_details(self, place_id: str) -> Dict:
+        """Asynchronously get detailed information about a place."""
         try:
-            return self.client.place(place_id)
+            def fetch():
+                return self.client.place(place_id)
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting place details: {e}")
             raise
 
-    def search_places(self, query: str, location: Optional[Dict[str, float]] = None, radius: int = 5000) -> Dict:
-        """Search for places matching a query."""
+    async def search_places(self, query: str, location: Optional[Dict[str, float]] = None, radius: int = 5000) -> Dict:
+        """Asynchronously search for places matching a query."""
         try:
-            return self.client.places(query, location=location, radius=radius)
+            def search():
+                return self.client.places(query, location=location, radius=radius)
+            return await asyncio.to_thread(search)
         except Exception as e:
             logger.error(f"Error searching places: {e}")
             raise
 
-    def get_distance_matrix(self, origins: List[str], destinations: List[str], mode: str = "driving") -> Dict:
-        """Get distance and duration between multiple origins and destinations."""
+    async def get_distance_matrix(self, origins: List[str], destinations: List[str], mode: str = "driving") -> Dict:
+        """Asynchronously get distance and duration between multiple origins and destinations."""
         try:
-            return self.client.distance_matrix(origins, destinations, mode=mode)
+            def fetch():
+                return self.client.distance_matrix(origins, destinations, mode=mode)
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting distance matrix: {e}")
             raise
@@ -133,80 +140,87 @@ class GoogleMapsService(GoogleAPIService):
         """Cleanup when the service is destroyed."""
         self.client = None
 
-    def find_nearby_workout_locations(self, location: Union[Dict[str, float], str], radius: int = 5000) -> List[Dict]:
-        """Find nearby workout locations (gyms, fitness centers, etc.)."""
+    async def find_nearby_workout_locations(self, location: Union[Dict[str, float], str], radius: int = 5000) -> List[Dict]:
+        """Asynchronously find nearby workout locations (gyms, fitness centers, etc.)."""
         try:
-            # Convert location to tuple if it's a string
-            if isinstance(location, str):
-                # Geocode the location if it's a natural language query
-                geocode_result = self.client.geocode(location)
-                if not geocode_result:
-                    raise ValueError(f"Could not geocode location: {location}")
-                location_tuple = (
-                    geocode_result[0]['geometry']['location']['lat'],
-                    geocode_result[0]['geometry']['location']['lng']
-                )
-            else:
-                location_tuple = (location['lat'], location['lng'])
+            def search():
+                # Convert location to tuple if it's a string
+                if isinstance(location, str):
+                    # Geocode the location if it's a natural language query
+                    geocode_result = self.client.geocode(location)
+                    if not geocode_result:
+                        raise ValueError(f"Could not geocode location: {location}")
+                    location_tuple = (
+                        geocode_result[0]['geometry']['location']['lat'],
+                        geocode_result[0]['geometry']['location']['lng']
+                    )
+                else:
+                    location_tuple = (location['lat'], location['lng'])
 
-            # Use the googlemaps client to search for gyms and fitness centers
-            places_result = self.client.places_nearby(
-                location=location_tuple,
-                radius=radius,
-                type='gym'
-            )
-            
-            if not places_result or 'results' not in places_result:
-                return []
-            
-            return places_result['results']
-            
+                # Use the googlemaps client to search for gyms and fitness centers
+                places_result = self.client.places_nearby(
+                    location=location_tuple,
+                    radius=radius,
+                    type='gym'
+                )
+                
+                if not places_result or 'results' not in places_result:
+                    return []
+                
+                return places_result['results']
+            return await asyncio.to_thread(search)
         except Exception as e:
             logger.error(f"Error finding nearby workout locations: {e}")
             raise
 
-    def get_location_details(self, place_id: str) -> Dict[str, Any]:
-        """Get detailed information about a specific location."""
+    async def get_location_details(self, place_id: str) -> Dict[str, Any]:
+        """Asynchronously get detailed information about a specific location."""
         try:
-            url = 'https://maps.googleapis.com/maps/api/place/details/json'
-            params = {
-                'place_id': place_id,
-                'key': self.api_key
-            }
-            response = requests.get(url, params=params)
-            data = response.json()
-            if data['status'] == 'OK':
-                return data['result']
-            else:
-                print(f"Error getting location details: {data['status']}")
-                return {}
+            def fetch():
+                url = 'https://maps.googleapis.com/maps/api/place/details/json'
+                params = {
+                    'place_id': place_id,
+                    'key': self.api_key
+                }
+                response = requests.get(url, params=params)
+                data = response.json()
+                if data['status'] == 'OK':
+                    return data['result']
+                else:
+                    print(f"Error getting location details: {data['status']}")
+                    return {}
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             print(f"Error getting location details: {e}")
             return {}
 
-    def find_running_trails(self, location: Dict[str, float], radius: int = 5000) -> List[Dict[str, Any]]:
+    async def find_running_trails(self, location: Dict[str, float], radius: int = 5000) -> List[Dict[str, Any]]:
+        """Asynchronously find running trails near a location."""
         try:
-            params = {
-                "location": f"{location['lat']},{location['lng']}",
-                "radius": radius,
-                "keyword": "running trail",
-                "key": self.api_key
-            }
-            url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-            response = requests.get(url, params=params)
-            response.raise_for_status()
-            results = response.json()
-            trails = []
-            for result in results.get('results', []):
-                trails.append({
-                    'name': result['name'],
-                    'address': result.get('vicinity', ''),
-                    'rating': result.get('rating', 0),
-                    'location': result['geometry']['location']
-                })
-            return trails
+            def search():
+                params = {
+                    "location": f"{location['lat']},{location['lng']}",
+                    "radius": radius,
+                    "keyword": "running trail",
+                    "key": self.api_key
+                }
+                url = f"https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                results = response.json()
+                trails = []
+                for result in results.get('results', []):
+                    trails.append({
+                        'name': result.get('name', 'Unknown'),
+                        'address': result.get('vicinity', 'No address'),
+                        'rating': result.get('rating', 'No rating'),
+                        'place_id': result.get('place_id', ''),
+                        'location': result.get('geometry', {}).get('location', {})
+                    })
+                return trails
+            return await asyncio.to_thread(search)
         except Exception as e:
-            print(f"Error finding running trails: {e}")
+            logger.error(f"Error finding running trails: {e}")
             return []
         finally:
             gc.collect() 

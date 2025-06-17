@@ -12,6 +12,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 import base64
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -21,43 +22,38 @@ class GoogleGmailService(GoogleServiceBase):
     def __init__(self):
         """Initialize the Gmail service."""
         self.SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-        self.creds = None
-        self.service = self.initialize_service()
+        super().__init__()
 
-    def initialize_service(self):
+    async def initialize_service(self):
         """Initialize the Google Gmail service using the new OAuth flow."""
-        self.creds = get_google_credentials()
         return build('gmail', 'v1', credentials=self.creds)
 
-    def get_recent_emails(self, max_results: int = 10) -> List[Dict[str, Any]]:
-        """Get recent emails from the user's Gmail."""
+    async def get_recent_emails(self, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Asynchronously get recent emails from the user's Gmail."""
         try:
-            results = self.service.users().messages().list(
-                userId='me',
-                maxResults=max_results
-            ).execute()
-            
-            messages = results.get('messages', [])
-            emails = []
-            
-            for message in messages:
-                msg = self.service.users().messages().get(
+            def fetch_emails():
+                results = self.service.users().messages().list(
                     userId='me',
-                    id=message['id']
+                    maxResults=max_results
                 ).execute()
-                
-                headers = msg['payload']['headers']
-                subject = next(h['value'] for h in headers if h['name'] == 'Subject')
-                sender = next(h['value'] for h in headers if h['name'] == 'From')
-                
-                emails.append({
-                    'id': message['id'],
-                    'subject': subject,
-                    'sender': sender,
-                    'snippet': msg['snippet']
-                })
-            
-            return emails
+                messages = results.get('messages', [])
+                emails = []
+                for message in messages:
+                    msg = self.service.users().messages().get(
+                        userId='me',
+                        id=message['id']
+                    ).execute()
+                    headers = msg['payload']['headers']
+                    subject = next(h['value'] for h in headers if h['name'] == 'Subject')
+                    sender = next(h['value'] for h in headers if h['name'] == 'From')
+                    emails.append({
+                        'id': message['id'],
+                        'subject': subject,
+                        'sender': sender,
+                        'snippet': msg['snippet']
+                    })
+                return emails
+            return await asyncio.to_thread(fetch_emails)
         except Exception as e:
             logger.error(f"Error fetching emails: {e}")
             raise
@@ -107,23 +103,36 @@ class GoogleGmailService(GoogleServiceBase):
             logger.error(f"Error searching emails: {e}")
             raise
 
-    def get_email_content(self, message_id):
+    async def get_email_content(self, message_id):
+        """Asynchronously get the content of a specific email."""
         try:
-            message = self.service.users().messages().get(
-                userId='me',
-                id=message_id,
-                format='full'
-            ).execute()
-            if 'payload' in message and 'parts' in message['payload']:
-                parts = message['payload']['parts']
-                for part in parts:
-                    if part['mimeType'] == 'text/plain':
-                        data = part['body']['data']
-                        text = base64.urlsafe_b64decode(data).decode()
-                        return text
-            return "No content found"
+            def fetch():
+                message = self.service.users().messages().get(
+                    userId='me',
+                    id=message_id,
+                    format='full'
+                ).execute()
+                
+                # Extract the email content
+                if 'payload' in message:
+                    payload = message['payload']
+                    if 'parts' in payload:
+                        # Multipart message
+                        for part in payload['parts']:
+                            if part['mimeType'] == 'text/plain':
+                                data = part['body'].get('data', '')
+                                if data:
+                                    return base64.urlsafe_b64decode(data).decode('utf-8')
+                    else:
+                        # Simple message
+                        data = payload['body'].get('data', '')
+                        if data:
+                            return base64.urlsafe_b64decode(data).decode('utf-8')
+                
+                return "No content found"
+            return await asyncio.to_thread(fetch)
         except Exception as e:
-            logger.error(f"Error fetching email content: {e}")
+            logger.error(f"Error getting email content: {e}")
             raise
 
     def list_messages(self, query: str = '', max_results: int = 10) -> List[Dict]:
@@ -150,24 +159,15 @@ class GoogleGmailService(GoogleServiceBase):
             logger.error(f"Error listing messages: {e}")
             raise
             
-    def get_message(self, message_id: str) -> Dict:
-        """
-        Get a specific message by ID.
-        
-        Args:
-            message_id (str): ID of the message to retrieve
-            
-        Returns:
-            Dict: Message data
-        """
+    async def get_message(self, message_id: str) -> Dict:
+        """Asynchronously get a specific message by ID."""
         try:
-            message = self.service.users().messages().get(
-                userId='me',
-                id=message_id,
-                format='full'
-            ).execute()
-            
-            return message
+            def fetch():
+                return self.service.users().messages().get(
+                    userId='me',
+                    id=message_id
+                ).execute()
+            return await asyncio.to_thread(fetch)
         except Exception as e:
             logger.error(f"Error getting message: {e}")
             raise
@@ -211,49 +211,28 @@ class GoogleGmailService(GoogleServiceBase):
             logger.error(f"Error sending message: {e}")
             raise
             
-    def create_draft(self, to: str, subject: str, body: str, is_html: bool = False) -> Dict:
-        """
-        Create a draft email message.
-        
-        Args:
-            to (str): Recipient email address
-            subject (str): Email subject
-            body (str): Email body
-            is_html (bool): Whether the body is HTML
-            
-        Returns:
-            Dict: Draft message data
-        """
+    async def create_draft(self, to: str, subject: str, body: str, is_html: bool = False) -> Dict:
+        """Asynchronously create a draft email message."""
         try:
-            message = MIMEMultipart()
-            message['to'] = to
-            message['subject'] = subject
-            
-            # Attach the body
-            if is_html:
-                msg = MIMEText(body, 'html')
-            else:
-                msg = MIMEText(body)
-            message.attach(msg)
-            
-            # Encode the message
-            raw = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
-            
-            # Create the draft
-            draft = self.service.users().drafts().create(
-                userId='me',
-                body={'message': {'raw': raw}}
-            ).execute()
-            
-            return draft
+            def create():
+                message = MIMEMultipart()
+                message['to'] = to
+                message['subject'] = subject
+                if is_html:
+                    msg = MIMEText(body, 'html')
+                else:
+                    msg = MIMEText(body)
+                message.attach(msg)
+                raw = base64.urlsafe_b64encode(message.as_bytes()).decode('utf-8')
+                draft = self.service.users().drafts().create(
+                    userId='me',
+                    body={'message': {'raw': raw}}
+                ).execute()
+                return draft
+            return await asyncio.to_thread(create)
         except Exception as e:
             logger.error(f"Error creating draft: {e}")
             raise
-
-    def authenticate(self):
-        """Authenticate with Gmail API."""
-        self.creds = get_google_credentials()
-        self.service = build('gmail', 'v1', credentials=self.creds)
 
     def modify_message_labels(self, message_id: str, add_labels: List[str] = None, remove_labels: List[str] = None) -> Dict:
         """

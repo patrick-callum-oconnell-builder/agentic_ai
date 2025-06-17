@@ -1,51 +1,48 @@
 import sys
 import os
-import unittest
-from unittest.mock import MagicMock, patch
-from datetime import datetime
+import pytest
+from datetime import datetime, timezone
 
 # Add the parent directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
-from tests.integration.google_services.base_google_integration import BaseGoogleIntegrationTest
-from agent import PersonalTrainerAgent
-from google_services.tasks import GoogleTasksService
+@pytest.mark.asyncio
+async def test_create_workout_tasklist(agent):
+    # Explicitly await the agent fixture
+    agent_instance = await agent
+    try:
+        tasklist = await agent_instance.tasks_service.create_workout_tasklist()
+        assert tasklist is not None
+        assert 'id' in tasklist
+        print(f"Tasks test: Successfully created workout task list with id {tasklist['id']}")
+    except Exception as e:
+        pytest.fail(f"Failed to create workout task list: {str(e)}")
 
-class TestTasksIntegration(BaseGoogleIntegrationTest):
-    """Test suite for Google Tasks integration."""
-    
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        # Create a workout task list and store its ID for use in other tests
-        cls.tasklist = cls.agent.tasks_service.create_workout_tasklist()
-        cls.tasklist_id = cls.tasklist.get('id')
-
-    def test_create_workout_tasklist(self):
-        """Test creating a workout task list."""
-        self.assertIsNotNone(self.tasklist)
-        self.assertIn('id', self.tasklist)
-        print(f"Tasks test: Successfully created workout task list with id {self.tasklist_id}")
-
-    def test_add_workout_task(self):
-        """Test adding a workout task."""
-        try:
-            # Create a test workout task
-            workout_name = "Upper Body Workout"
-            notes = "Focus on chest and shoulders"
-            due_date = datetime(2024, 3, 21, 10, 0, 0).isoformat() + 'Z'
-            # Add the task using the agent's tasks service
-            result = self.agent.tasks_service.add_workout_task(
-                tasklist_id=self.tasklist_id,
-                workout_name=workout_name,
-                notes=notes,
-                due_date=due_date
-            )
-            self.assertIsNotNone(result)
-            self.assertIn('id', result)
-            print(f"Tasks test: Successfully added workout task")
-        except Exception as e:
-            self.fail(f"Failed to add workout task: {str(e)}")
+@pytest.mark.asyncio
+async def test_add_workout_task(agent):
+    # Explicitly await the agent fixture
+    agent_instance = await agent
+    try:
+        # First create a tasklist
+        tasklist = await agent_instance.tasks_service.create_workout_tasklist()
+        assert tasklist is not None
+        assert 'id' in tasklist
+        
+        # Then add a task
+        workout_name = "Upper Body Workout"
+        notes = "Focus on chest and shoulders"
+        due_date = datetime(2024, 3, 21, 10, 0, 0, tzinfo=timezone.utc)
+        result = await agent_instance.tasks_service.add_workout_task(
+            tasklist_id=tasklist['id'],
+            workout_name=workout_name,
+            notes=notes,
+            due_date=due_date
+        )
+        assert result is not None
+        assert 'id' in result
+        print(f"Tasks test: Successfully added workout task")
+    except Exception as e:
+        pytest.fail(f"Failed to add workout task: {str(e)}")
 
 if __name__ == '__main__':
-    unittest.main() 
+    pytest.main() 
