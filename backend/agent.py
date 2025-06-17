@@ -29,6 +29,7 @@ import dateparser
 from datetime import timezone as dt_timezone
 from langchain.schema import BaseMessage
 import re
+from backend.tools.preferences_tools import add_preference_to_kg
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -320,6 +321,13 @@ class PersonalTrainerAgent:
                     description="Find nearby workout locations (gyms, fitness centers, etc.) near a given location"
                 )
             ])
+        self.tools.append(
+            Tool(
+                name="add_preference_to_kg",
+                func=add_preference_to_kg,
+                description="Add a user preference to the knowledge graph"
+            )
+        )
         
     async def async_init(self):
         """Initialize the agent asynchronously."""
@@ -643,6 +651,17 @@ When the user asks to schedule a workout:
         agent_action = None
         tool_result = None
         last_tool = None
+
+        # LLM-based preference extraction and tool call
+        if hasattr(user_input, 'content'):
+            user_text = user_input.content
+        else:
+            user_text = str(user_input)
+        preference = await self.extract_preference_llm(user_text)
+        if preference:
+            # Call the add_preference_to_kg tool
+            pref_result = add_preference_to_kg(preference)
+            responses.append(f"I've added your preference: {preference} to your knowledge graph.")
 
         while state != "DONE":
             print(f"Current state: {state}")
@@ -1067,6 +1086,13 @@ Please provide the action statement:"""
                     description="Find nearby workout locations (gyms, fitness centers, etc.) near a given location"
                 )
             ])
+        self.tools.append(
+            Tool(
+                name="add_preference_to_kg",
+                func=add_preference_to_kg,
+                description="Add a user preference to the knowledge graph"
+            )
+        )
         logger.info(f"Created {len(self.tools)} tools for agent")
         return self.tools
 
@@ -1383,4 +1409,22 @@ Please provide a natural, detailed response:"""
         except Exception as e:
             logger.error(f"Error extracting time frame: {e}")
             return None
+
+    async def extract_preference_llm(self, text: str) -> Optional[str]:
+        """Use the LLM to extract a user preference from text. Returns the preference string or None."""
+        prompt = (
+            "You are an AI assistant that extracts user preferences from text. "
+            "Return ONLY the preference (e.g., 'pizza', 'martial arts', 'strength training'), "
+            "or 'None' if no clear preference is found. Do not include any explanation or extra text.\n"
+            f"Text: {text}"
+        )
+        messages = [
+            SystemMessage(content="You are an AI assistant that extracts user preferences from text. Respond with only the preference or 'None'."),
+            HumanMessage(content=prompt)
+        ]
+        response = await self.llm.ainvoke(messages)
+        preference = response.content.strip()
+        if preference.lower() == 'none' or not preference:
+            return None
+        return preference
 

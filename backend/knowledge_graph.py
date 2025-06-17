@@ -4,12 +4,14 @@ import re
 from dataclasses import dataclass
 import logging
 from collections import defaultdict
+import os
+import json
 
 logger = logging.getLogger(__name__)
 
 KNOWLEDGE_GRAPH_PROMPT = """
 My name is Patrick O'Connell. I am 25. I like pizza. I also like broccoli. I like martial arts. 
-I have a sister, Margaret. My address is 1 Infinite Loop, Cupertino, CA 95014.
+My address is 1 Infinite Loop, Cupertino, CA 95014.
 
 For workouts, I prefer strength training."""
 
@@ -40,7 +42,7 @@ class KnowledgeGraph:
     
     # Common patterns for entity and relationship extraction
     ENTITY_PATTERNS = [
-        Pattern(r"name is (\w+(?:\s+\w+)*)", "PERSON", "IS_NAMED"),
+        Pattern(r"name is ([\w'\- ]+)", "PERSON", "IS_NAMED"),
         Pattern(r"am (\d+)", "AGE", "HAS_AGE"),
         Pattern(r"like ([\w\s]+)", "PREFERENCE", "LIKES"),
         Pattern(r"have a (\w+), (\w+(?:\s+\w+)*)", "PERSON", "HAS_FAMILY"),
@@ -66,7 +68,10 @@ class KnowledgeGraph:
         "requires": "REQUIRES",
         "have": "HAS",
         "am": "IS_A",
+        "enjoys": "ENJOYS",
     }
+    
+    KG_FILE = os.path.join(os.path.dirname(__file__), 'kg.txt')
     
     def __init__(self):
         self.graph = nx.DiGraph()
@@ -74,10 +79,34 @@ class KnowledgeGraph:
         self.relation_map: Dict[Tuple[str, str, str], Relation] = {}
         self.entity_types: Set[str] = set()
         self.relation_types: Set[str] = set()
-        self.root_person: Optional[str] = None  # Store the user's name
+        self.root_person: Optional[str] = None
+        self.patterns = self.ENTITY_PATTERNS.copy()
+        self.relationship_indicators = self.RELATIONSHIP_INDICATORS.copy()
+        # Always rebuild from prompt
+        self.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
+        self.save_to_file()
         
+    def save_to_file(self):
+        """Persist the KG to a file as JSON."""
+        data = {
+            'entities': {k: {'type': v.type, 'attributes': v.attributes} for k, v in self.entity_map.items()},
+            'relations': [
+                {'source': r.source, 'target': r.target, 'type': r.type, 'attributes': r.attributes}
+                for r in self.relation_map.values()
+            ],
+            'root_person': self.root_person
+        }
+        with open(self.KG_FILE, 'w') as f:
+            json.dump(data, f)
+
     def parse_prompt(self, prompt: str) -> None:
         """Parse the prompt and construct the knowledge graph."""
+        # Clear existing data
+        self.graph = nx.DiGraph()
+        self.entity_map = {}
+        self.relation_map = {}
+        self.root_person = None
+        
         # Split into sentences and clean them
         sentences = [s.strip() for s in prompt.split('.') if s.strip()]
         
@@ -89,28 +118,35 @@ class KnowledgeGraph:
                 match = re.search(r"name is ([\w'\- ]+)", sentence, re.IGNORECASE)
                 if match:
                     self.root_person = match.group(1).strip()
-        # Ensure the root person node is always present
-        if self.root_person and self.root_person not in self.entity_map:
-            self._add_entity("PERSON", self.root_person, {"type": "user", "source": "root"})
         
         # Second pass: establish relationships
         for sentence in sentences:
             self._extract_relationships(sentence)
             
+        # Save the final state after parsing
+        self.save_to_file()
+        
     def _extract_entities(self, sentence: str) -> None:
         """Extract entities from a sentence using pattern matching."""
-        for pattern in self.ENTITY_PATTERNS:
-            # Skip IS_NAMED pattern for root person
-            if pattern.relation_type == "IS_NAMED":
-                continue
+        for pattern in self.patterns:
             matches = pattern.pattern.finditer(sentence)
             for match in matches:
-                # Extract the main entity
                 entity_value = match.group(1).strip()
-                self._add_entity(pattern.entity_type, entity_value, {
-                    "type": pattern.entity_type.lower(),
-                    "source": "pattern_match"
-                })
+                # If this is a preference-like pattern, split on 'and' and commas
+                if pattern.entity_type in ["PREFERENCE", "WORKOUT_PREFERENCE"]:
+                    items = re.split(r",| and ", entity_value)
+                    for item in items:
+                        item = item.strip()
+                        if item:
+                            self._add_entity(pattern.entity_type, item, {
+                                "type": pattern.entity_type.lower(),
+                                "source": "pattern_match"
+                            })
+                else:
+                    self._add_entity(pattern.entity_type, entity_value, {
+                        "type": pattern.entity_type.lower(),
+                        "source": "pattern_match"
+                    })
                 # If there's a second group (e.g., for family relationships)
                 if len(match.groups()) > 1:
                     related_entity = match.group(2).strip()
@@ -122,32 +158,33 @@ class KnowledgeGraph:
     def _extract_relationships(self, sentence: str) -> None:
         """Extract relationships between entities using natural language patterns."""
         specific_pattern_matched = False
-        for pattern in self.ENTITY_PATTERNS:
-            # Custom handling for family relationships
-            if pattern.relation_type == "HAS_FAMILY":
-                matches = pattern.pattern.finditer(sentence)
-                for match in matches:
-                    if len(match.groups()) == 2 and self.root_person:
-                        # Always relate the root person to the family member with 'RELATED_TO'
-                        entity2 = match.group(2).strip()
-                        self._add_relation(self.root_person, entity2, "RELATED_TO")
-                        specific_pattern_matched = True
-                continue
-            # Skip IS_NAMED pattern
-            if pattern.relation_type == "IS_NAMED":
-                continue
+        for pattern in self.patterns:
             if pattern.relation_type:
                 matches = pattern.pattern.finditer(sentence)
                 for match in matches:
                     if len(match.groups()) == 1:
                         entity_value = match.group(1).strip()
-                        if self._is_first_person(sentence) and self.root_person:
-                            subject = self.root_person
+                        # If this is a preference-like pattern, split on 'and' and commas
+                        if pattern.entity_type in ["PREFERENCE", "WORKOUT_PREFERENCE"]:
+                            items = re.split(r",| and ", entity_value)
+                            for item in items:
+                                item = item.strip()
+                                if item:
+                                    if self._is_first_person(sentence) and self.root_person:
+                                        subject = self.root_person
+                                    else:
+                                        subject = self._find_subject_in_context(sentence[:sentence.lower().find(match.group(0))])
+                                    if subject:
+                                        self._add_relation(subject, item, pattern.relation_type)
+                                        specific_pattern_matched = True
                         else:
-                            subject = self._find_subject_in_context(sentence[:sentence.lower().find(match.group(0))])
-                        if subject:
-                            self._add_relation(subject, entity_value, pattern.relation_type)
-                            specific_pattern_matched = True
+                            if self._is_first_person(sentence) and self.root_person:
+                                subject = self.root_person
+                            else:
+                                subject = self._find_subject_in_context(sentence[:sentence.lower().find(match.group(0))])
+                            if subject:
+                                self._add_relation(subject, entity_value, pattern.relation_type)
+                                specific_pattern_matched = True
                     elif len(match.groups()) == 2:
                         entity1 = match.group(1).strip()
                         entity2 = match.group(2).strip()
@@ -158,8 +195,8 @@ class KnowledgeGraph:
         if not specific_pattern_matched:
             words = sentence.lower().split()
             for i, word in enumerate(words):
-                if word in self.RELATIONSHIP_INDICATORS:
-                    relation_type = self.RELATIONSHIP_INDICATORS[word]
+                if word in self.relationship_indicators:
+                    relation_type = self.relationship_indicators[word]
                     if i > 0 and i < len(words) - 1:
                         source_entities = self._find_entities_in_context(sentence[:sentence.lower().find(word)])
                         target_entities = self._find_entities_in_context(sentence[sentence.lower().find(word) + len(word):])
@@ -168,10 +205,6 @@ class KnowledgeGraph:
                             source_entities = [self.root_person]
                         for source in source_entities:
                             for target in target_entities:
-                                # Prevent IS_A from root to their own name or substring
-                                if relation_type == "IS_A" and self.root_person:
-                                    if target == self.root_person or target in self.root_person or self.root_person in target:
-                                        continue
                                 self._add_relation(source, target, relation_type)
     
     def _is_first_person(self, sentence: str) -> bool:
@@ -201,88 +234,61 @@ class KnowledgeGraph:
             self.entity_map[entity_id] = entity
             self.graph.add_node(entity_id, **{"type": entity_type, **attributes})
             self.entity_types.add(entity_type)
+            self.save_to_file()  # Save after adding entity
             
     def _add_relation(self, source: str, target: str, relation_type: str, attributes: Dict[str, any] = None) -> None:
         """Add a relation to the knowledge graph."""
         if attributes is None:
             attributes = {}
-            
-        relation = Relation(source=source, target=target, type=relation_type, attributes=attributes)
         key = (source, target, relation_type)
-        
         if key not in self.relation_map:
+            relation = Relation(source=source, target=target, type=relation_type, attributes=attributes)
             self.relation_map[key] = relation
             self.graph.add_edge(source, target, **{"type": relation_type, **attributes})
             self.relation_types.add(relation_type)
+            self.save_to_file()  # Save after adding relation
             
     def get_entity(self, entity_id: str) -> Optional[Entity]:
         """Get an entity by its ID."""
         return self.entity_map.get(entity_id)
         
     def get_relations(self, entity_id: str) -> List[Relation]:
-        """Get all relations for an entity."""
-        return [rel for rel in self.relation_map.values() 
-                if rel.source == entity_id or rel.target == entity_id]
+        """Get all relations where the given entity is the source."""
+        return [r for r in self.relation_map.values() if r.source == entity_id]
         
     def query(self, entity_type: Optional[str] = None, relation_type: Optional[str] = None) -> List[Tuple[Entity, Relation, Entity]]:
-        """Query the knowledge graph for specific entity and relation types."""
+        """Query the knowledge graph for entities and relations matching the given criteria."""
         results = []
-        
         for source, target, data in self.graph.edges(data=True):
-            if relation_type and data.get('type') != relation_type:
-                continue
-                
             source_entity = self.entity_map.get(source)
             target_entity = self.entity_map.get(target)
-            
-            if entity_type:
-                if source_entity and source_entity.type != entity_type:
-                    continue
-                if target_entity and target_entity.type != entity_type:
-                    continue
-                    
             if source_entity and target_entity:
+                if entity_type and target_entity.type != entity_type:
+                    continue
+                if relation_type and data.get('type') != relation_type:
+                    continue
                 relation = self.relation_map.get((source, target, data.get('type')))
                 if relation:
                     results.append((source_entity, relation, target_entity))
-                    
         return results
-        
-    def to_dict(self) -> Dict:
-        """Convert the knowledge graph to a dictionary representation, only including the subgraph connected to the root person."""
-        if self.root_person and self.root_person in self.graph:
-            # Get all nodes in the connected component containing the root person
-            connected_nodes = nx.node_connected_component(self.graph.to_undirected(), self.root_person)
-            # Filter entities and relations
-            entities = {id: {"type": e.type, "attributes": e.attributes}
-                        for id, e in self.entity_map.items() if id in connected_nodes}
-            relations = {f"{r.source}_{r.target}_{r.type}": {
-                "source": r.source,
-                "target": r.target,
-                "type": r.type,
-                "attributes": r.attributes
-            } for r in self.relation_map.values() if r.source in connected_nodes and r.target in connected_nodes}
-            return {"entities": entities, "relations": relations}
-        else:
-            # Fallback: return the full graph
-            return {
-                "entities": {id: {"type": e.type, "attributes": e.attributes} 
-                            for id, e in self.entity_map.items()},
-                "relations": {f"{r.source}_{r.target}_{r.type}": {
-                    "source": r.source,
-                    "target": r.target,
-                    "type": r.type,
-                    "attributes": r.attributes
-                } for r in self.relation_map.values()}
-            }
         
     def add_pattern(self, pattern: str, entity_type: str, relation_type: Optional[str] = None) -> None:
         """Add a new pattern for entity and relationship extraction."""
-        self.ENTITY_PATTERNS.append(Pattern(pattern, entity_type, relation_type))
+        self.patterns.append(Pattern(pattern, entity_type, relation_type))
         
     def add_relationship_indicator(self, indicator: str, relation_type: str) -> None:
         """Add a new relationship indicator."""
-        self.RELATIONSHIP_INDICATORS[indicator.lower()] = relation_type.upper()
+        self.relationship_indicators[indicator] = relation_type
+
+    def to_dict(self) -> dict:
+        """Return a serializable dictionary of all entities and relations."""
+        return {
+            "entities": {k: {"type": v.type, "attributes": v.attributes} for k, v in self.entity_map.items()},
+            "relations": [
+                {"source": r.source, "target": r.target, "type": r.type, "attributes": r.attributes}
+                for r in self.relation_map.values()
+            ]
+        }
 
 # Example usage
 if __name__ == "__main__":
@@ -296,19 +302,16 @@ if __name__ == "__main__":
     kg.add_relationship_indicator("enjoys", "ENJOYS")
     kg.add_relationship_indicator("practices", "PRACTICES")
     
-    # Parse the prompt
-    kg.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
-    
     # Print all entities
     print("\nEntities:")
     for entity_id, entity in kg.entity_map.items():
         print(f"{entity_id} ({entity.type}): {entity.attributes}")
-        
+    
     # Print all relations
     print("\nRelations:")
     for relation in kg.relation_map.values():
         print(f"{relation.source} --[{relation.type}]--> {relation.target}")
-        
+    
     # Print available entity and relation types
     print("\nAvailable Entity Types:", kg.entity_types)
     print("Available Relation Types:", kg.relation_types)

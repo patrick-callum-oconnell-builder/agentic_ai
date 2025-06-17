@@ -285,6 +285,5 @@ async def chat_stream(request: ChatRequest, background_tasks: BackgroundTasks, x
 
 @router.get("/knowledge-graph")
 def get_knowledge_graph():
-    kg = KnowledgeGraph()
-    kg.parse_prompt(KNOWLEDGE_GRAPH_PROMPT)
+    kg = KnowledgeGraph()  # Loads from file if exists
     return kg.to_dict() 
