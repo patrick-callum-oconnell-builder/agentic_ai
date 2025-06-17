@@ -1,13 +1,16 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Montserrat:wght@500;600;700&family=Playfair+Display:wght@500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@400;500;600;700&display=swap');
 
 :root {
-  /* Color Scheme */
-  --color-primary: #1A2B3C;
-  --color-accent: #D4AF37;
-  --color-background: #F8F9FA;
-  --color-text: #2C3E50;
-  --color-success: #2E8B57;
-  --color-error: #800020;
+  /* Primary Colors */
+  --color-primary: #2C3E50;  /* Deep navy blue */
+  --color-accent: #C5A572;   /* Warm gold */
+  --color-background: #F5F6F8; /* Light gray with blue undertone */
+  
+  /* Text Colors */
+  --color-text: #2C3E50;     /* Deep navy blue */
+  --color-text-light: #6B7280; /* Muted gray */
+  
+  /* UI Colors */
   --color-white: #FFFFFF;
   --color-gray-100: #F8F9FA;
   --color-gray-200: #E9ECEF;
@@ -18,9 +21,25 @@
   --color-gray-700: #495057;
   --color-gray-800: #343A40;
   --color-gray-900: #212529;
-
-  /* Typography */
-  --font-heading: 'Montserrat', sans-serif;
+  
+  /* Accent Colors */
+  --color-success: #2E7D32;  /* Deep green */
+  --color-warning: #ED6C02;  /* Warm orange */
+  --color-error: #D32F2F;    /* Deep red */
+  --color-info: #0288D1;     /* Deep blue */
+  
+  /* Gradients */
+  --gradient-primary: linear-gradient(135deg, var(--color-primary) 0%, var(--color-gray-800) 100%);
+  --gradient-accent: linear-gradient(135deg, var(--color-accent) 0%, #D4B483 100%);
+  
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.1);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.15);
+  
+  /* Fonts */
+  --font-heading: 'Playfair Display', serif;
   --font-body: 'Inter', sans-serif;
   --font-accent: 'Playfair Display', serif;
 }
@@ -33,9 +52,9 @@
 
 body {
   font-family: var(--font-body);
-  background-color: var(--color-background);
   color: var(--color-text);
-  line-height: 1.6;
+  background: var(--color-background);
+  line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -43,7 +62,11 @@ body {
 h1, h2, h3, h4, h5, h6 {
   font-family: var(--font-heading);
   font-weight: 600;
-  color: var(--color-primary);
+  line-height: 1.2;
+}
+
+button {
+  font-family: var(--font-body);
 }
 
 /* Custom Scrollbar */
@@ -52,8 +75,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-gray-200);
-  border-radius: 4px;
+  background: var(--color-gray-100);
 }
 
 ::-webkit-scrollbar-thumb {
