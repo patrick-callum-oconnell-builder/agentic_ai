@@ -109,6 +109,16 @@ const Chat: React.FC = () => {
 
   return (
     <div className="chat-container">
+      <div className="chat-header">
+        <div className="chat-header-profile" title="Personal Trainer">PT</div>
+        <div className="chat-header-info">
+          <div className="chat-header-name">Alex Trainer</div>
+          <div className="chat-header-status">
+            <span className="chat-header-status-dot"></span>
+            Online • Personal Fitness Coach
+          </div>
+        </div>
+      </div>
       <div className="chat-messages">
         {messages.map((message, index) => (
           <div
