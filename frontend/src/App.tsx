@@ -3,6 +3,12 @@ import Chat from './components/Chat';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import './App.css';
 
+export interface Message {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: Date;
+}
+
 const KnowledgeGraphTab: React.FC = () => (
   <div className="kg-graph-area">
     <KnowledgeGraph />
@@ -11,6 +17,7 @@ const KnowledgeGraphTab: React.FC = () => (
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'chat' | 'kg'>('chat');
+  const [messages, setMessages] = useState<Message[]>([]);
 
   return (
     <div className="App">
@@ -40,7 +47,7 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="App-main">
-            {activeTab === 'chat' ? <Chat /> : <KnowledgeGraphTab />}
+            {activeTab === 'chat' ? <Chat messages={messages} setMessages={setMessages} /> : <KnowledgeGraphTab />}
           </main>
         </div>
       </div>

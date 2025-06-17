@@ -1,18 +1,17 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useEffect } from 'react';
 import { format } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Message } from '../App';
 
-interface Message {
-  role: 'user' | 'assistant';
-  content: string;
-  timestamp: Date;
+interface ChatProps {
+  messages: Message[];
+  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
 }
 
-const Chat: React.FC = () => {
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
+const Chat: React.FC<ChatProps> = ({ messages, setMessages }) => {
+  const [input, setInput] = React.useState('');
+  const [isLoading, setIsLoading] = React.useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -120,7 +119,7 @@ const Chat: React.FC = () => {
       <div className="chat-messages">
         {messages.map((message, index) => (
           <div
-            key={`${index}-${message.timestamp.getTime()}`}
+            key={`${index}-${message.timestamp instanceof Date ? message.timestamp.getTime() : new Date(message.timestamp).getTime()}`}
             className={`message ${message.role}`}
           >
             <div className="message-content">
@@ -138,7 +137,7 @@ const Chat: React.FC = () => {
                 {formatMessageContent(message.content)}
               </ReactMarkdown>
               <div className="message-time">
-                {format(message.timestamp, 'h:mm a')}
+                {format(message.timestamp instanceof Date ? message.timestamp : new Date(message.timestamp), 'h:mm a')}
               </div>
             </div>
           </div>
