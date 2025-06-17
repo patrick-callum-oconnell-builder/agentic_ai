@@ -41,7 +41,8 @@ check_env_vars() {
 check_python_version() {
     if command_exists python3; then
         PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-        if (( $(echo "$PYTHON_VERSION < 3.8" | bc -l) )); then
+        REQUIRED_VERSION="3.8"
+        if [ "$(printf '%s\n' "$REQUIRED_VERSION" "$PYTHON_VERSION" | sort -V | head -n1)" != "$REQUIRED_VERSION" ]; then
             echo -e "${RED}Error: Python 3.8 or higher is required. Found version $PYTHON_VERSION${NC}"
             exit 1
         fi
