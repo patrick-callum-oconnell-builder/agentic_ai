@@ -68,7 +68,7 @@ class TestGoogleServices(unittest.TestCase):
         self.drive = GoogleDriveService() if GoogleDriveService else None
         self.fit = GoogleFitnessService() if GoogleFitnessService else None
         self.gmail = GmailService() if GmailService else None
-        self.maps = GoogleMapsService() if GoogleMapsService else None
+        self.maps = GoogleMapsService(api_key="AIzaMockApiKeyForTesting123456789") if GoogleMapsService else None
         self.sheets = GoogleSheetsService() if GoogleSheetsService else None
         self.tasks = GoogleTasksService() if GoogleTasksService else None
 
@@ -211,9 +211,10 @@ class TestGoogleServices(unittest.TestCase):
     @unittest.skipIf(not os.getenv('GOOGLE_MAPS_API_KEY') or GoogleMapsService is None, "Maps API key or service not set")
     def test_maps_service(self):
         """Test Google Maps service initialization."""
-        service = GoogleMapsService()
+        # Use the mock API key that was set up in setUp
+        service = GoogleMapsService(api_key="AIzaMockApiKeyForTesting123456789")
         self.assertIsNotNone(service)
-        self.assertIsNotNone(service.service)
+        self.assertIsNotNone(service.client)
 
     def test_calendar_credentials(self):
         """Test that calendar credentials exist and have the correct scopes."""

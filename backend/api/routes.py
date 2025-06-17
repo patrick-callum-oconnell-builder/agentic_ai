@@ -38,7 +38,13 @@ async def initialize_services():
         logger.info("Initializing Google services...")
         calendar_service = GoogleCalendarService()
         gmail_service = GoogleGmailService()
-        maps_service = GoogleMapsService()
+        
+        # Get the Google Maps API key from environment variables
+        maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        if not maps_api_key:
+            raise ValueError("Missing required environment variable: GOOGLE_MAPS_API_KEY")
+        maps_service = GoogleMapsService(api_key=maps_api_key)
+        
         fitness_service = GoogleFitnessService()
         tasks_service = GoogleTasksService()
         drive_service = GoogleDriveService()

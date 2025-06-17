@@ -24,13 +24,19 @@ class TestAgentIntegration(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures before each test method."""
         load_dotenv()
+        
+        # Get the Google Maps API key from environment variables
+        maps_api_key = os.getenv("GOOGLE_MAPS_API_KEY")
+        if not maps_api_key:
+            raise ValueError("Missing required environment variable: GOOGLE_MAPS_API_KEY")
+        
         self.agent = PersonalTrainerAgent(
             calendar_service=GoogleCalendarService(),
             gmail_service=GoogleGmailService(),
             tasks_service=GoogleTasksService(),
             drive_service=GoogleDriveService(),
             sheets_service=GoogleSheetsService(),
-            maps_service=GoogleMapsService()
+            maps_service=GoogleMapsService(api_key=maps_api_key)
         )
 
     @pytest.mark.asyncio

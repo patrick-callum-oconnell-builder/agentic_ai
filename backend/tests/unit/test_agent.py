@@ -66,7 +66,8 @@ class TestPersonalTrainerAgent(unittest.TestCase):
             gmail_service=self.mock_gmail,
             tasks_service=self.mock_tasks,
             drive_service=self.mock_drive,
-            sheets_service=self.mock_sheets
+            sheets_service=self.mock_sheets,
+            maps_service=self.mock_maps
         )
 
     def test_initialization(self):
@@ -78,30 +79,32 @@ class TestPersonalTrainerAgent(unittest.TestCase):
         self.assertIsNotNone(self.agent.drive_service)
         self.assertIsNotNone(self.agent.sheets_service)
         self.assertIsNotNone(self.agent.tools)
-        self.assertIsNotNone(self.agent.agent)
+        # Note: agent attribute is only set after async_init() is called
 
     def test_tool_creation(self):
         """Test that all tools are created correctly."""
         tools = self.agent.tools
         tool_names = [tool.name for tool in tools]
         
-        # Check for required tools
-        required_tools = [
-            "Calendar",
-            "GetEventsForDate",
-            "WriteCalendarEvent",
-            "Email",
-            "CreateWorkoutTaskList",
-            "AddWorkoutTask",
-            "GetWorkoutTasks",
-            "CreateWorkoutFolder",
-            "UploadWorkoutPlan",
-            "CreateWorkoutTracker",
-            "AddWorkoutEntry",
-            "AddNutritionEntry"
+        # Check for the actual tools we're using
+        expected_tools = [
+            "get_calendar_events",
+            "create_calendar_event", 
+            "send_email",
+            "create_task",
+            "get_tasks",
+            "search_drive",
+            "get_sheet_data"
         ]
         
-        for tool_name in required_tools:
+        # Add maps tools if maps_service is provided
+        if self.agent.maps_service:
+            expected_tools.extend([
+                "get_directions",
+                "find_nearby_workout_locations"
+            ])
+        
+        for tool_name in expected_tools:
             self.assertIn(tool_name, tool_names, f"Missing tool: {tool_name}")
 
     def test_calendar_tools(self):
@@ -173,43 +176,6 @@ class TestPersonalTrainerAgent(unittest.TestCase):
         # Test get recent emails
         self.agent.gmail_service.get_recent_emails()
         self.mock_gmail.get_recent_emails.assert_called_once()
-
-    @patch('backend.agent.ChatOpenAI')
-    def test_suggest_workout(self, mock_chat):
-        """Test workout suggestion functionality."""
-        mock_chat.return_value.invoke.return_value = "Here's a suggested workout plan..."
-        user_input = "I want to do a cardio workout tomorrow morning"
-        result = self.agent.suggest_workout(user_input)
-        self.assertIsInstance(result, str)
-        self.assertGreater(len(result), 0)
-
-    @patch('backend.agent.ChatOpenAI')
-    def test_track_workout(self, mock_chat):
-        """Test workout tracking functionality."""
-        mock_chat.return_value.invoke.return_value = "Workout tracked successfully"
-        workout_data = {
-            "type": "cardio",
-            "duration": 30,
-            "intensity": "moderate",
-            "notes": "Test workout"
-        }
-        result = self.agent.track_workout(workout_data)
-        self.assertIsInstance(result, str)
-        self.assertGreater(len(result), 0)
-
-    @patch('backend.agent.ChatOpenAI')
-    def test_create_workout_plan(self, mock_chat):
-        """Test workout plan creation functionality."""
-        mock_chat.return_value.invoke.return_value = "Workout plan created successfully"
-        plan_data = {
-            "goal": "weight loss",
-            "duration_weeks": 4,
-            "workouts_per_week": 3,
-            "preferences": ["cardio", "strength"]
-        }
-        result = self.agent.create_workout_plan(plan_data)
-        self.assertIsInstance(result, str)
-        self.assertGreater(len(result), 0)
 
     @patch('backend.agent.ChatOpenAI')
     async def test_process_messages(self, mock_chat):
