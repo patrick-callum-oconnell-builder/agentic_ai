@@ -145,24 +145,13 @@ class FindNearbyWorkoutLocationsInput(BaseModel):
     radius: int = Field(5000, description="Search radius in meters (default 5000)")
 
 # Helper function to extract time frame from user message
-async def extract_timeframe(text: str) -> Optional[Dict[str, str]]:
-    """Extract timeframe from text using LLM and return timeMin and timeMax in ISO format."""
+def extract_timeframe_from_text(text: str) -> Optional[Dict[str, str]]:
+    """Extract timeframe from text and return timeMin and timeMax in ISO format."""
     try:
-        messages = [
-            SystemMessage(content="""You are a helpful assistant that extracts timeframes from text. 
-            Return ONLY the timeframe in a standardized format, or 'None' if no timeframe is found.
-            Valid timeframes are: 'this week', 'next week', 'today', 'tomorrow', or a day of the week.
-            Do not include any explanation or additional text."""),
-            HumanMessage(content=f"Extract the timeframe from this text: {text}")
-        ]
-        response = await self.llm.ainvoke(messages)
-        timeframe = response.content.strip().lower()
-        
-        # Get current time in UTC
         now = datetime.now(dt_timezone.utc)
         
-        # Convert timeframe to timeMin and timeMax
-        if timeframe == 'this week':
+        # Common time frame patterns
+        if 'this week' in text.lower():
             # Set time_min to start of current week (Monday)
             start_of_week = now - timedelta(days=now.weekday())
             start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -172,7 +161,7 @@ async def extract_timeframe(text: str) -> Optional[Dict[str, str]]:
                 'timeMin': start_of_week.isoformat(),
                 'timeMax': end_of_week.isoformat()
             }
-        elif timeframe == 'next week':
+        elif 'next week' in text.lower():
             # Set time_min to start of next week (Monday)
             start_of_week = now - timedelta(days=now.weekday()) + timedelta(days=7)
             start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -182,14 +171,14 @@ async def extract_timeframe(text: str) -> Optional[Dict[str, str]]:
                 'timeMin': start_of_week.isoformat(),
                 'timeMax': end_of_week.isoformat()
             }
-        elif timeframe == 'today':
+        elif 'today' in text.lower():
             start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
             return {
                 'timeMin': start_of_day.isoformat(),
                 'timeMax': end_of_day.isoformat()
             }
-        elif timeframe == 'tomorrow':
+        elif 'tomorrow' in text.lower():
             start_of_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
             return {
@@ -198,7 +187,7 @@ async def extract_timeframe(text: str) -> Optional[Dict[str, str]]:
             }
         return None
     except Exception as e:
-        logger.error(f"Error extracting timeframe: {e}")
+        logger.error(f"Error extracting time frame: {e}")
         return None
 
 class PersonalTrainerAgent:
@@ -530,7 +519,7 @@ When the user asks to schedule a workout:
                     tool_args = parts[1].strip()
                     # If get_calendar_events, override args with timeframe if present in user message
                     if tool_name == "get_calendar_events":
-                        timeframe = await extract_timeframe(input_text)
+                        timeframe = extract_timeframe_from_text(input_text)
                         if timeframe:
                             tool_args = f'"{timeframe}"'
                     logger.info(f"[TOOL_CALL] Tool selected: {tool_name}, Args: {tool_args}")
@@ -561,80 +550,94 @@ When the user asks to schedule a workout:
             raise
 
     async def process_tool_result(self, tool_name: str, result: Any) -> str:
-        """Process the result of a tool call and format it for the user."""
+        """Process the result of a tool execution and return a user-friendly response."""
         try:
-            if tool_name == "get_calendar_events":
-                if not result:
-                    return "You don't have any upcoming events."
-                events = []
-                for event in result:
-                    start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', ''))
-                    summary = event.get('summary', 'Untitled Event')
-                    events.append(f"- {summary} at {start}")
-                return "Here are your upcoming events:\n" + "\n".join(events)
-            
-            elif tool_name == "create_calendar_event":
-                if isinstance(result, dict) and 'id' in result:
-                    return f"I've successfully added '{result.get('summary', 'the event')}' to your calendar."
-                elif isinstance(result, dict) and 'conflicting_events' in result:
-                    # More explicit conflict message for test_tool_confirmation_and_response
-                    return f"I couldn't add the event due to a conflict: {result.get('message', 'There is a conflict with another event.')}"
+            # Special handling for delete_events_in_range
+            if tool_name == "delete_events_in_range":
+                if isinstance(result, int):
+                    if result == 0:
+                        return "I've checked your calendar for the specified time period, but there were no events to delete."
+                    elif result == 1:
+                        return "I've removed 1 event from your calendar for the specified time period."
+                    else:
+                        return f"I've removed {result} events from your calendar for the specified time period."
                 else:
-                    return "I've added the event to your calendar."
+                    return "I've cleared your calendar for the specified time period."
+
+            # Create a detailed prompt for the LLM to summarize the tool result
+            prompt = f"""You are a helpful personal trainer AI assistant. Summarize the result of the {tool_name} tool in a user-friendly way.
+
+Tool result: {json.dumps(result, default=str)}
+
+Guidelines:
+1. Be concise but informative
+2. Use natural, conversational language
+3. Format any dates, times, or numbers in a readable way
+4. If there are any errors or issues, explain them clearly
+5. If the result is a list or complex data, summarize the key points
+6. Use markdown formatting for better readability
+7. For calendar events, ALWAYS include:
+   - Event title
+   - Date and time in a readable format
+   - A clickable link to the event using markdown [Event Link](url)
+   - Any other relevant details
+8. For workout locations, include:
+   - Name of the location
+   - Address
+   - Distance if available
+9. For tasks, include:
+   - Task name
+   - Due date
+   - Priority if available
+10. For emails, include:
+    - Recipient
+    - Subject
+    - Status of the send operation
+
+Example responses:
+- For calendar events: "I've scheduled your Upper Body Workout for tomorrow at 10 AM at the Downtown Gym. You can view all the details here: [Event Link](https://calendar.google.com/event/...)"
+- For workout locations: "I found a great gym nearby: Fitness First at 123 Main St, just 0.5 miles away. They have all the equipment you need for your workout routine."
+- For tasks: "I've added 'Track daily protein intake' to your task list, due this Friday. I'll remind you about it as the deadline approaches."
+
+Please provide a natural, detailed response:"""
+
+            messages = [
+                SystemMessage(content="You are a helpful personal trainer AI assistant. Always respond in clear, natural language, never as a code block or raw data. Be encouraging and focused on helping the user achieve their fitness goals."),
+                HumanMessage(content=prompt)
+            ]
+
+            response = await self.llm.ainvoke(messages)
+            if not response or not hasattr(response, 'content') or not response.content.strip():
+                raise RuntimeError("LLM returned empty response")
             
-            elif tool_name == "delete_events_in_range":
-                return f"I've cleared your calendar for the specified time period."
+            summary = response.content.strip()
             
-            elif tool_name == "send_email":
-                return f"I've sent the email to {result.get('to', 'the recipient')}."
+            # Validate that the summary is not just a raw tool result
+            if json.dumps(result, default=str) in summary:
+                raise RuntimeError("LLM returned raw tool result instead of a summary")
             
-            elif tool_name == "create_task":
-                return f"I've created a task: {result.get('title', 'the task')} due {result.get('due', 'soon')}."
-            
-            elif tool_name == "get_tasks":
-                if not result:
-                    return "You don't have any tasks."
-                tasks = []
-                for task in result:
-                    title = task.get('title', 'Untitled Task')
-                    due = task.get('due', 'No due date')
-                    tasks.append(f"- {title} (Due: {due})")
-                return "Here are your tasks:\n" + "\n".join(tasks)
-            
-            elif tool_name == "search_drive":
-                if not result:
-                    return "I couldn't find any matching files."
-                files = []
-                for file in result:
-                    name = file.get('name', 'Untitled File')
-                    files.append(f"- {name}")
-                return "Here are the matching files:\n" + "\n".join(files)
-            
-            elif tool_name == "get_sheet_data":
-                if not result:
-                    return "I couldn't find any data in the sheet."
-                return f"I found {len(result)} rows of data in the sheet."
-            
-            elif tool_name == "create_workout_tracker":
-                if isinstance(result, dict) and 'spreadsheetId' in result:
-                    return f"I've created a new workout tracker spreadsheet. You can access it with ID: {result['spreadsheetId']}"
-                return "I've created a new workout tracker spreadsheet."
-            
-            elif tool_name == "add_workout_entry":
-                if isinstance(result, dict) and 'updates' in result:
-                    return "I've added your workout entry to the tracker."
-                return "I've added your workout entry to the tracker."
-            
-            elif tool_name == "add_nutrition_entry":
-                if isinstance(result, dict) and 'updates' in result:
-                    return "I've added your nutrition entry to the tracker."
-                return "I've added your nutrition entry to the tracker."
-            
-            elif tool_name == "get_directions":
-                if not result:
-                    return "I couldn't find directions for that route."
-                return f"I found a route that will take {result.get('duration', 'some time')}."
-            
+            # If get_calendar_events and summary does not mention any event titles, fall back to default event list
+            if tool_name == "get_calendar_events":
+                event_titles = [event.get('summary', '') for event in result if isinstance(event, dict)]
+                if not any(title in summary for title in event_titles):
+                    # Fallback: list the events
+                    if not event_titles:
+                        return "You have no upcoming events in the requested time frame."
+                    events = []
+                    for event in result:
+                        start = event.get('start', {}).get('dateTime', event.get('start', {}).get('date', ''))
+                        summary_title = event.get('summary', 'Untitled Event')
+                        events.append(f"- {summary_title} at {start}")
+                    return "Here are your upcoming events in the requested time frame:\n" + "\n".join(events)
+            return summary
+
+        except Exception as e:
+            logger.error(f"Error summarizing tool result: {e}")
+            # Provide a basic fallback response based on the tool type
+            if tool_name == "create_calendar_event":
+                return "I've scheduled your workout in your calendar. You can check your calendar app for the details."
+            elif tool_name == "get_calendar_events":
+                return "I'll list your upcoming events."
             elif tool_name == "find_nearby_workout_locations":
                 if not result:
                     return "I couldn't find any workout locations nearby."
@@ -645,95 +648,12 @@ When the user asks to schedule a workout:
                     rating = location.get('rating', 'No rating')
                     locations.append(f"- {name} at {address} (Rating: {rating})")
                 return "Here are some workout locations nearby:\n" + "\n".join(locations)
-            
+            elif tool_name == "delete_events_in_range":
+                if isinstance(result, int):
+                    return f"I've removed {result} events from your calendar."
+                return "I've cleared your calendar for the specified time period."
             else:
-                return str(result)
-        except Exception as e:
-            logger.error(f"Error processing tool result: {str(e)}")
-            return f"I encountered an error while processing the result: {str(e)}"
-
-    async def agent_conversation_loop(self, user_input):
-        """Loop-based orchestration to support multi-step agent actions with enforced tool result summarization."""
-        state = "AGENT_THINKING"
-        history = [user_input]
-        responses = []
-        agent_action = None
-        tool_result = None
-        last_tool = None
-
-        while state != "DONE":
-            print(f"Current state: {state}")
-            if state == "AGENT_THINKING":
-                agent_action = await self.decide_next_action(history)
-                print(f"Agent action: {agent_action}")
-                if agent_action["type"] == "message":
-                    responses.append(agent_action["content"])
-                    state = "DONE"
-                elif agent_action["type"] == "tool_call":
-                    last_tool = agent_action["tool"]
-                    print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
-                    # Send confirmation message before calling tool
-                    confirmation_message = await self._get_tool_confirmation_message(last_tool, agent_action["args"])
-                    responses.append(confirmation_message)
-                    state = "AGENT_TOOL_CALL"
-                else:
-                    state = "DONE"
-            elif state == "AGENT_TOOL_CALL":
-                tool_result = await self._execute_tool(agent_action["tool"], agent_action["args"])
-                print(f"Tool result for {last_tool}: {tool_result}")
-                # Add the tool result as a message in the history
-                history.append(AIMessage(content=f"TOOL RESULT: {tool_result}"))
-                # Always go to summarize state after a tool call
-                state = "AGENT_SUMMARIZE_TOOL_RESULT"
-            elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
-                # Always require the LLM to summarize the tool result for the user
-                summary = await self._summarize_tool_result(last_tool, tool_result)
-                if not summary:
-                    logger.error(f"LLM returned empty summary for tool {last_tool} and result {tool_result}")
-                    raise RuntimeError("LLM returned empty summary")
-                responses.append(summary)
-                state = "DONE"
-
-        print(f"Final responses: {responses}")
-        return responses
-
-    async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
-        """Get a confirmation message for a tool call.
-        
-        This method generates a simple statement of what action the agent is about to take.
-        It does not ask for confirmation - that's handled by the agent's conversation flow.
-        """
-        try:
-            # Create a prompt that guides the LLM to generate a simple action statement
-            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
-
-Tool arguments: {args}
-
-Please provide a simple, natural statement that:
-1. Clearly states what action will be taken
-2. Includes the key details from the arguments in a user-friendly format
-3. Is concise and context-appropriate
-4. Does NOT ask for confirmation or end with a question
-
-Example formats:
-- For calendar events: "I'll schedule a [workout type] for [time] at [location]"
-- For location searches: "I'll search for [location type] near [location]"
-- For task creation: "I'll create a task to [task description] due [date]"
-- For calendar clearing: "I'll clear your calendar for [time period]"
-
-Please provide the action statement:"""
-
-            messages = [
-                SystemMessage(content="You are a helpful personal trainer AI assistant. Always respond in clear, natural language. Be concise and direct in stating what action you're about to take."),
-                HumanMessage(content=prompt)
-            ]
-
-            response = await self.llm.ainvoke(messages)
-            return response.content.strip() if hasattr(response, 'content') else str(response)
-
-        except Exception as e:
-            logger.error(f"Error generating tool confirmation message: {e}")
-            return "I'm about to process your request."
+                return f"I've completed your request. You can check the details in your {tool_name.replace('_', ' ')}."
 
     async def process_messages(self, messages: List[BaseMessage]) -> str:
         """Process a list of messages and return a response as a string."""
@@ -759,69 +679,33 @@ Please provide the action statement:"""
             return f"I encountered an error: {str(e)}"
 
     async def process_messages_stream(self, messages):
-        """Process a list of messages and yield responses as they become available."""
-        if not self.agent:
-            raise RuntimeError("Agent not initialized. Call async_init() first.")
-
-        # Convert messages to LangChain format
-        input_messages = []
-        for msg in messages:
-            if isinstance(msg, dict):
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "user":
-                    input_messages.append(HumanMessage(content=content))
-                elif role == "assistant":
-                    input_messages.append(AIMessage(content=content))
-                elif role == "system":
-                    input_messages.append(SystemMessage(content=content))
-            else:
-                input_messages.append(msg)
-
-        # Use the streaming agent_conversation_loop for real-time responses
-        async for response in self.agent_conversation_loop_stream(input_messages):
-            yield response
-
-    async def agent_conversation_loop_stream(self, user_input):
-        """Stream-based orchestration to support multi-step agent actions with enforced tool result summarization."""
-        state = "AGENT_THINKING"
-        history = [user_input]
-        agent_action = None
-        tool_result = None
-        last_tool = None
-
-        while state != "DONE":
-            print(f"Current state: {state}")
-            if state == "AGENT_THINKING":
-                agent_action = await self.decide_next_action(history)
-                print(f"Agent action: {agent_action}")
-                if agent_action["type"] == "message":
-                    yield agent_action["content"]
-                    state = "DONE"
-                elif agent_action["type"] == "tool_call":
-                    last_tool = agent_action["tool"]
-                    print(f"About to call tool: {last_tool} with args: {agent_action['args']}")
-                    # Send confirmation message before calling tool
-                    confirmation_message = await self._get_tool_confirmation_message(last_tool, agent_action["args"])
-                    yield confirmation_message
-                    state = "AGENT_TOOL_CALL"
-                else:
-                    state = "DONE"
-            elif state == "AGENT_TOOL_CALL":
-                tool_result = await self._execute_tool(agent_action["tool"], agent_action["args"])
-                print(f"Tool result for {last_tool}: {tool_result}")
-                # Add the tool result as a message in the history
-                history.append(AIMessage(content=f"TOOL RESULT: {tool_result}"))
-                # Always go to summarize state after a tool call
-                state = "AGENT_SUMMARIZE_TOOL_RESULT"
-            elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
-                # Always require the LLM to summarize the tool result for the user
-                summary = await self._summarize_tool_result(last_tool, tool_result)
-                if not summary:
-                    logger.error(f"LLM returned empty summary for tool {last_tool} and result {tool_result}")
-                    raise RuntimeError("LLM returned empty summary")
-                yield summary
-                state = "DONE"
+        """Process messages and return a streaming response."""
+        try:
+            # Convert messages to LangChain format
+            input_messages = []
+            for msg in messages:
+                converted = self._convert_message(msg)
+                if converted:
+                    input_messages.append(converted)
+            
+            if not input_messages:
+                yield "I didn't receive any valid messages to process."
+                return
+            
+            # Get the last user message
+            user_message = input_messages[-1]
+            if not isinstance(user_message, HumanMessage):
+                yield "I need a user message to process."
+                return
+            
+            # Use the agent directly for streaming responses
+            async for chunk in self.agent.astream(input_messages):
+                if hasattr(chunk, 'content') and chunk.content:
+                    yield chunk.content
+                
+        except Exception as e:
+            logger.error(f"Error in process_messages_stream: {e}")
+            yield f"Error processing messages: {str(e)}"
 
     def _parse_tool_string(self, output_str):
         """Parse tool name and input from a raw tool invocation string."""
@@ -903,7 +787,7 @@ Please provide the action statement:"""
                 # Special handling for get_calendar_events
                 if tool_name == "get_calendar_events":
                     # Extract time frame from the user's query
-                    timeframe = await extract_timeframe(args)
+                    timeframe = extract_timeframe_from_text(args)
                     if timeframe:
                         # Override the args with the extracted time frame
                         args = timeframe
@@ -1150,52 +1034,18 @@ Please provide the action statement:"""
             return f"Error: {str(e)}"
 
     def _convert_message(self, msg):
-        """Convert a message dict to a LangChain message object, with robust logging and error handling."""
-        logger.debug(f"_convert_message called with: {msg}")
-        print(f"[DEBUG] _convert_message called with: {msg}")
-        if not isinstance(msg, dict):
-            logger.warning(f"Message is not a dict: {msg}")
-            print(f"[WARN] Message is not a dict: {msg}")
-            return None
-        role = msg.get("role", "user").lower()  # Normalize role to lowercase
-        content = msg.get("content", "")
-        # Validate content
-        if not content or not isinstance(content, str):
-            logger.warning(f"Message has invalid content: {msg}")
-            print(f"[WARN] Message has invalid content: {msg}")
-            return None
-        content = content.strip()
-        if not content:
-            logger.warning(f"Message has empty content after stripping: {msg}")
-            print(f"[WARN] Message has empty content after stripping: {msg}")
-            return None
-        # Convert to appropriate message type
-        try:
-            if role == "user":
-                logger.debug(f"Returning HumanMessage for: {content}")
-                print(f"[DEBUG] Returning HumanMessage for: {content}")
-                return HumanMessage(content=content)
-            elif role == "assistant":
-                logger.debug(f"Returning AIMessage for: {content}")
-                print(f"[DEBUG] Returning AIMessage for: {content}")
-                return AIMessage(content=content)
-            elif role == "system":
-                logger.debug(f"Returning SystemMessage for: {content}")
-                print(f"[DEBUG] Returning SystemMessage for: {content}")
-                return SystemMessage(content=content)
+        """Convert a message to the format expected by the agent."""
+        if isinstance(msg, dict):
+            if msg.get('role') == 'user':
+                return HumanMessage(content=msg.get('content', ''))
+            elif msg.get('role') == 'assistant':
+                return AIMessage(content=msg.get('content', ''))
             else:
-                logger.warning(f"Unknown role '{role}', defaulting to HumanMessage: {msg}")
-                print(f"[WARN] Unknown role '{role}', defaulting to HumanMessage: {msg}")
-                return HumanMessage(content=content)
-        except Exception as e:
-            logger.error(f"Error converting message: {e}")
-            print(f"[ERROR] Error converting message: {e}")
-            return None
-
-    def _get_tomorrow_date(self):
-        """Get tomorrow's date in ISO format."""
-        tomorrow = datetime.now() + timedelta(days=1)
-        return tomorrow.strftime("%Y-%m-%d")
+                return HumanMessage(content=str(msg))
+        elif isinstance(msg, str):
+            return HumanMessage(content=msg)
+        else:
+            return HumanMessage(content=str(msg))
 
     def _convert_to_calendar_format(self, event_details):
         """Convert event details to Google Calendar format."""
@@ -1352,11 +1202,7 @@ Please provide a natural, detailed response:"""
             if tool_name == "create_calendar_event":
                 return "I've scheduled your workout in your calendar. You can check your calendar app for the details."
             elif tool_name == "get_calendar_events":
-                query = args.get('query', '')
-                if query and ('week' in query.lower() or 'coming week' in query.lower()):
-                    return f"I'll list your events for the coming week."
-                else:
-                    return "I'll list your upcoming events."
+                return "I'll list your upcoming events."
             elif tool_name == "find_nearby_workout_locations":
                 if not tool_result:
                     return "I couldn't find any workout locations nearby."
@@ -1373,51 +1219,6 @@ Please provide a natural, detailed response:"""
                 return "I've cleared your calendar for the specified time period."
             else:
                 return f"I've completed your request. You can check the details in your {tool_name.replace('_', ' ')}."
-
-    def _extract_timeframe(self, query: str) -> Optional[Dict[str, str]]:
-        """Extract time frame from user query and return timeMin and timeMax in ISO format."""
-        try:
-            now = datetime.now(dt_timezone.utc)
-            
-            # Common time frame patterns
-            if 'this week' in query.lower():
-                # Set time_min to start of current week (Monday)
-                start_of_week = now - timedelta(days=now.weekday())
-                start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Set time_max to end of week (Sunday)
-                end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
-                return {
-                    'timeMin': start_of_week.isoformat(),
-                    'timeMax': end_of_week.isoformat()
-                }
-            elif 'next week' in query.lower():
-                # Set time_min to start of next week (Monday)
-                start_of_week = now - timedelta(days=now.weekday()) + timedelta(days=7)
-                start_of_week = start_of_week.replace(hour=0, minute=0, second=0, microsecond=0)
-                # Set time_max to end of next week (Sunday)
-                end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
-                return {
-                    'timeMin': start_of_week.isoformat(),
-                    'timeMax': end_of_week.isoformat()
-                }
-            elif 'today' in query.lower():
-                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
-                return {
-                    'timeMin': start_of_day.isoformat(),
-                    'timeMax': end_of_day.isoformat()
-                }
-            elif 'tomorrow' in query.lower():
-                start_of_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                end_of_day = start_of_day + timedelta(days=1, microseconds=-1)
-                return {
-                    'timeMin': start_of_day.isoformat(),
-                    'timeMax': end_of_day.isoformat()
-                }
-            return None
-        except Exception as e:
-            logger.error(f"Error extracting time frame: {e}")
-            return None
 
     async def extract_preference_llm(self, text: str) -> Optional[str]:
         """Use the LLM to extract a user preference from text. Returns the preference string or None."""
