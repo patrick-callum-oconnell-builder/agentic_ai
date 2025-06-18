@@ -679,7 +679,7 @@ Please provide a natural, detailed response:"""
             return f"I encountered an error: {str(e)}"
 
     async def process_messages_stream(self, messages):
-        """Process messages and return a streaming response."""
+        """Process messages and return a streaming response with multi-step tool execution."""
         try:
             # Convert messages to LangChain format
             input_messages = []
@@ -698,10 +698,41 @@ Please provide a natural, detailed response:"""
                 yield "I need a user message to process."
                 return
             
-            # Use the agent directly for streaming responses
-            async for chunk in self.agent.astream(input_messages):
-                if hasattr(chunk, 'content') and chunk.content:
-                    yield chunk.content
+            # Multi-step process: decide action → confirm → execute → summarize
+            state = "AGENT_THINKING"
+            history = [user_message.content]
+            agent_action = None
+            tool_result = None
+            last_tool = None
+
+            while state != "DONE":
+                if state == "AGENT_THINKING":
+                    agent_action = await self.decide_next_action(history)
+                    if agent_action["type"] == "message":
+                        yield agent_action["content"]
+                        state = "DONE"
+                    elif agent_action["type"] == "tool_call":
+                        last_tool = agent_action["tool"]
+                        # Send confirmation message before calling tool
+                        confirmation_message = await self._get_tool_confirmation_message(last_tool, agent_action["args"])
+                        yield confirmation_message
+                        state = "AGENT_TOOL_CALL"
+                    else:
+                        state = "DONE"
+                elif state == "AGENT_TOOL_CALL":
+                    tool_result = await self._execute_tool(agent_action["tool"], agent_action["args"])
+                    # Add the tool result as a message in the history
+                    history.append(f"TOOL RESULT: {tool_result}")
+                    # Always go to summarize state after a tool call
+                    state = "AGENT_SUMMARIZE_TOOL_RESULT"
+                elif state == "AGENT_SUMMARIZE_TOOL_RESULT":
+                    # Always require the LLM to summarize the tool result for the user
+                    summary = await self._summarize_tool_result(last_tool, tool_result)
+                    if not summary:
+                        logger.error(f"LLM returned empty summary for tool {last_tool} and result {tool_result}")
+                        raise RuntimeError("LLM returned empty summary")
+                    yield summary
+                    state = "DONE"
                 
         except Exception as e:
             logger.error(f"Error in process_messages_stream: {e}")
@@ -1237,4 +1268,43 @@ Please provide a natural, detailed response:"""
         if preference.lower() == 'none' or not preference:
             return None
         return preference
+
+    async def _get_tool_confirmation_message(self, tool_name: str, args: str) -> str:
+        """Get a confirmation message for a tool call.
+        
+        This method generates a simple statement of what action the agent is about to take.
+        It does not ask for confirmation - that's handled by the agent's conversation flow.
+        """
+        try:
+            # Create a prompt that guides the LLM to generate a simple action statement
+            prompt = f"""You are a helpful personal trainer AI assistant. The user has requested an action that requires using the {tool_name} tool.
+
+Tool arguments: {args}
+
+Please provide a simple, natural statement that:
+1. Clearly states what action will be taken
+2. Includes the key details from the arguments in a user-friendly format
+3. Is concise and context-appropriate
+4. Does NOT ask for confirmation or end with a question
+
+Example formats:
+- For calendar events: "I'll schedule a [workout type] for [time] at [location]"
+- For location searches: "I'll search for [location type] near [location]"
+- For task creation: "I'll create a task to [task description] due [date]"
+- For calendar clearing: "I'll clear your calendar for [time period]"
+- For preferences: "I'll remember that you like [preference]"
+
+Please provide the action statement:"""
+
+            messages = [
+                SystemMessage(content="You are a helpful personal trainer AI assistant. Always respond in clear, natural language. Be concise and direct in stating what action you're about to take."),
+                HumanMessage(content=prompt)
+            ]
+
+            response = await self.llm.ainvoke(messages)
+            return response.content.strip() if hasattr(response, 'content') else str(response)
+
+        except Exception as e:
+            logger.error(f"Error generating tool confirmation message: {e}")
+            return "I'm about to process your request."
 
