@@ -24,6 +24,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+.cursorignore
 
 # Ignore test cache
 .pytest_cache/
