@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import Chat from './components/Chat';
 import KnowledgeGraph from './components/KnowledgeGraph';
 import './App.css';
@@ -9,15 +9,13 @@ export interface Message {
   timestamp: Date;
 }
 
-const KnowledgeGraphTab: React.FC = () => (
-  <div className="kg-graph-area">
-    <KnowledgeGraph />
-  </div>
-);
-
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'chat' | 'kg'>('chat');
   const [messages, setMessages] = useState<Message[]>([]);
+  const [kgRefresh, setKgRefresh] = useState(0);
+
+  // Callback to trigger KG refresh
+  const triggerKgRefresh = useCallback(() => setKgRefresh(r => r + 1), []);
 
   return (
     <div className="App">
@@ -47,7 +45,13 @@ const App: React.FC = () => {
             </button>
           </aside>
           <main className="App-main">
-            {activeTab === 'chat' ? <Chat messages={messages} setMessages={setMessages} /> : <KnowledgeGraphTab />}
+            {activeTab === 'chat' ? (
+              <Chat messages={messages} setMessages={setMessages} onPreferenceAdded={triggerKgRefresh} />
+            ) : (
+              <div className="kg-graph-area">
+                <KnowledgeGraph refresh={kgRefresh} />
+              </div>
+            )}
           </main>
         </div>
       </div>

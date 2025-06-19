@@ -2,6 +2,9 @@
 
 An AI-powered personal trainer application that helps users with their fitness goals (scheduling workouts in their calendar, meal-prepping, etc). The application integrates with Google cloud services so the agent can automate the work associated with these tasks and save the user time.
 
+Here is a video demo of some functionality (in case you don't want to set up all of the Google Service API enabling, which isn't yet automated): 
+https://drive.google.com/file/d/10pUME3WR3DRclbFq2YwOQmOTCEIaif9s/view?usp=sharing 
+
 ## Features
 
 - Real-time conversation with the AI personal trainer.
@@ -12,11 +15,16 @@ An AI-powered personal trainer application that helps users with their fitness g
 
 Built with a modern Python FastAPI backend, LangGraph agent orchestration, and a React/MUI frontend for a clean, interactive user experience.
 
+The agent's orchestration is based on a typical state-based transition logic to help it decide whether to chat, use a tool,
+record preferences to memory, etc.
+
+The full memory architecture is not implemented yet (more comprehensive memory than just the current KG), but will be completed in an update that is being developed!
+
 ## Prerequisites
 
 - Python 3.8+
 - Node.js 14+
-- Google Cloud Platform account with Calendar and Gmail APIs enabled
+- Google Cloud Platform account with Calendar and Gmail APIs enabled (as well as any other Google services you'd like to use)
 - OpenAI API key
 
 ## Setup
